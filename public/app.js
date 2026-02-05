@@ -16,67 +16,163 @@ function getSessionId() {
 mySessionId = getSessionId();
 
 // Active game state persistence
+// Multi-game storage (supports 3-4 simultaneous games)
 function saveActiveGame(lobbyId, phase, playerName) {
-  localStorage.setItem('dr_activeGame', JSON.stringify({
+  const games = JSON.parse(localStorage.getItem('dr_activeGames') || '{}');
+  games[lobbyId] = {
     lobbyId, phase, playerName, sessionId: mySessionId, savedAt: Date.now()
-  }));
-}
-function getActiveGame() {
-  try {
-    const data = JSON.parse(localStorage.getItem('dr_activeGame'));
-    if (!data) return null;
-    if (Date.now() - data.savedAt > 5 * 60 * 60 * 1000) {
-      clearActiveGame();
-      return null;
+  };
+  localStorage.setItem('dr_activeGames', JSON.stringify(games));
+  
+  // Cleanup old games (>5 hours)
+  const now = Date.now();
+  Object.keys(games).forEach(id => {
+    if (now - games[id].savedAt > 5 * 60 * 60 * 1000) {
+      delete games[id];
     }
-    return data;
-  } catch { return null; }
+  });
+  localStorage.setItem('dr_activeGames', JSON.stringify(games));
 }
-function clearActiveGame() {
+
+function getActiveGames() {
+  try {
+    const games = JSON.parse(localStorage.getItem('dr_activeGames') || '{}');
+    const now = Date.now();
+    
+    // Filter out stale games
+    Object.keys(games).forEach(id => {
+      if (now - games[id].savedAt > 5 * 60 * 60 * 1000) {
+        delete games[id];
+      }
+    });
+    
+    return games;
+  } catch { return {}; }
+}
+
+function getActiveGame() {
+  // For backwards compatibility - returns most recent game
+  const games = getActiveGames();
+  const gameList = Object.values(games);
+  if (gameList.length === 0) return null;
+  
+  // Return most recently saved game
+  return gameList.sort((a, b) => b.savedAt - a.savedAt)[0];
+}
+
+function clearActiveGame(lobbyId) {
+  const games = getActiveGames();
+  if (lobbyId) {
+    // Clear specific game
+    delete games[lobbyId];
+  } else {
+    // Clear all (backwards compatibility)
+    Object.keys(games).forEach(id => delete games[id]);
+  }
+  localStorage.setItem('dr_activeGames', JSON.stringify(games));
+  
+  // Clean up old format
   localStorage.removeItem('dr_activeGame');
 }
+
 function updateActiveGamePhase(phase) {
-  const ag = getActiveGame();
-  if (ag) { ag.phase = phase; ag.savedAt = Date.now(); localStorage.setItem('dr_activeGame', JSON.stringify(ag)); }
+  if (!myLobbyId) return;
+  const games = getActiveGames();
+  if (games[myLobbyId]) {
+    games[myLobbyId].phase = phase;
+    games[myLobbyId].savedAt = Date.now();
+    localStorage.setItem('dr_activeGames', JSON.stringify(games));
+  }
 }
 
 // Check for active game and show banner on home screen
 function renderActiveGameBanner() {
   const banner = document.getElementById('activeGameBanner');
-  const ag = getActiveGame();
-  if (!ag) { banner.style.display = 'none'; return; }
-  const phaseLabel = ag.phase === 'waiting' ? '⏳ In Lobby' :
-                     ag.phase === 'drafting' ? '⚔️ Drafting' :
-                     ag.phase === 'live' ? '🔴 Live' :
-                     ag.phase === 'finished' ? '✅ Finished' : '🎮 Active';
-  banner.style.display = 'flex';
-  banner.innerHTML = `
-    <div class="active-game-banner" onclick="rejoinActiveGame()">
-      <div class="agb-pip"></div>
-      <div class="agb-info">
-        <div class="agb-title">${phaseLabel} — Room ${ag.lobbyId}</div>
-        <div class="agb-sub">Playing as ${ag.playerName}</div>
-      </div>
-      <button class="agb-btn" onclick="event.stopPropagation(); rejoinActiveGame()">REJOIN</button>
-      <button class="agb-leave" onclick="event.stopPropagation(); abandonGame()">✕</button>
-    </div>`;
+  const games = getActiveGames();
+  const gameList = Object.values(games);
+  
+  if (gameList.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+  
+  if (gameList.length === 1) {
+    // Single game - compact banner
+    const ag = gameList[0];
+    const phaseLabel = ag.phase === 'waiting' ? '⏳ In Lobby' :
+                       ag.phase === 'drafting' ? '⚔️ Drafting' :
+                       ag.phase === 'live' ? '🔴 Live' :
+                       ag.phase === 'finished' ? '✅ Finished' : '🎮 Active';
+    banner.style.display = 'flex';
+    banner.innerHTML = `
+      <div class="active-game-banner" onclick="rejoinActiveGame('${ag.lobbyId}')">
+        <div class="agb-pip"></div>
+        <div class="agb-info">
+          <div class="agb-title">${phaseLabel} — Room ${ag.lobbyId}</div>
+          <div class="agb-sub">Playing as ${ag.playerName}</div>
+        </div>
+        <button class="agb-btn" onclick="event.stopPropagation(); rejoinActiveGame('${ag.lobbyId}')">REJOIN</button>
+        <button class="agb-leave" onclick="event.stopPropagation(); abandonGame('${ag.lobbyId}')">✕</button>
+      </div>`;
+  } else {
+    // Multiple games - show count with VIEW ALL
+    const liveCount = gameList.filter(g => g.phase === 'live').length;
+    const draftingCount = gameList.filter(g => g.phase === 'drafting').length;
+    const waitingCount = gameList.filter(g => g.phase === 'waiting').length;
+    
+    const statusParts = [];
+    if (liveCount) statusParts.push(`${liveCount} Live`);
+    if (draftingCount) statusParts.push(`${draftingCount} Drafting`);
+    if (waitingCount) statusParts.push(`${waitingCount} Waiting`);
+    const statusText = statusParts.join(' • ');
+    
+    banner.style.display = 'flex';
+    banner.innerHTML = `
+      <div class="active-games-lobby" onclick="showGamesLobby()">
+        <div class="agb-pip"></div>
+        <div class="agb-info">
+          <div class="agb-title">🎮 ${gameList.length} Active Games</div>
+          <div class="agb-sub">${statusText}</div>
+        </div>
+        <button class="agb-btn" onclick="event.stopPropagation(); showGamesLobby()">VIEW ALL</button>
+      </div>`;
+  }
 }
 
-function rejoinActiveGame() {
-  const ag = getActiveGame();
+function rejoinActiveGame(lobbyId) {
+  const games = getActiveGames();
+  const ag = lobbyId ? games[lobbyId] : getActiveGame();
   if (!ag) return;
   mySessionId = ag.sessionId;
   localStorage.setItem('dr_sessionId', mySessionId);
   socket.emit('rejoin', { sessionId: mySessionId });
 }
 
-function abandonGame() {
+function abandonGame(lobbyId) {
   if (!confirm('Leave this game? You won\'t be able to rejoin.')) return;
-  clearActiveGame();
-  mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
-  localStorage.setItem('dr_sessionId', mySessionId);
-  myLobbyId = null; isHost = false;
+  
+  console.log('🚪 Abandoning game:', lobbyId);
+  
+  // Get current game to notify server
+  const games = getActiveGames();
+  const game = games[lobbyId];
+  
+  if (game && game.sessionId) {
+    socket.emit('leaveGame', { sessionId: game.sessionId, lobbyId });
+  }
+  
+  // Clear from storage
+  clearActiveGame(lobbyId);
+  
+  // If no more games, reset everything
+  const remaining = Object.keys(getActiveGames()).length;
+  if (remaining === 0) {
+    myLobbyId = null;
+    isHost = false;
+  }
+  
   renderActiveGameBanner();
+  closeGamesLobby();
   showToast('Left the game');
 }
 
@@ -1145,5 +1241,55 @@ function setFilter(filter, btn) {
   filterPlayers();
 }
 function filterPlayers() { renderPlayerPool(); }
+
+// Games Lobby Modal (for viewing multiple active games)
+function showGamesLobby() {
+  const modal = document.getElementById('gamesLobbyModal');
+  const gamesList = document.getElementById('gamesLobbyList');
+  
+  const games = getActiveGames();
+  const gameList = Object.values(games);
+  
+  // Sort by urgency: Live > Drafting > Waiting > Finished
+  const phaseOrder = { live: 1, drafting: 2, waiting: 3, finished: 4 };
+  gameList.sort((a, b) => phaseOrder[a.phase] - phaseOrder[b.phase]);
+  
+  gamesList.innerHTML = gameList.map(game => {
+    const phaseIcon = game.phase === 'live' ? '🔴' :
+                      game.phase === 'drafting' ? '⚔️' :
+                      game.phase === 'waiting' ? '⏳' : '✅';
+    const phaseLabel = game.phase === 'live' ? 'Live' :
+                       game.phase === 'drafting' ? 'Drafting' :
+                       game.phase === 'waiting' ? 'Waiting' : 'Finished';
+    const phaseColor = game.phase === 'live' ? 'live' :
+                       game.phase === 'drafting' ? 'drafting' :
+                       game.phase === 'waiting' ? 'waiting' : 'finished';
+    
+    return `
+      <div class="game-lobby-card ${phaseColor}">
+        <div class="game-card-header">
+          <div class="game-card-status">${phaseIcon} ${phaseLabel}</div>
+          <div class="game-card-code">Room ${game.lobbyId}</div>
+        </div>
+        <div class="game-card-player">Playing as ${game.playerName}</div>
+        <div class="game-card-actions">
+          <button class="btn-primary" onclick="rejoinActiveGame('${game.lobbyId}'); closeGamesLobby();">
+            ${game.phase === 'live' ? '👁️ WATCH' : '▶️ REJOIN'}
+          </button>
+          <button class="btn-danger" onclick="abandonGame('${game.lobbyId}')">LEAVE</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  
+  modal.classList.add('open');
+  modal.style.display = 'flex';
+}
+
+function closeGamesLobby() {
+  const modal = document.getElementById('gamesLobbyModal');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+}
 
 // Old live screen functions removed - now using live.html

@@ -1098,6 +1098,112 @@ body::before {
 }
 .agb-leave:hover { color: var(--red); border-color: rgba(255,61,90,0.3); }
 
+/* Draft Loading Overlay */
+.draft-loading-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(10, 10, 18, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  align-items: center;
+  justify-content: center;
+}
+.draft-loading-overlay.visible {
+  display: flex;
+}
+.draft-loading-card {
+  text-align: center;
+  padding: 40px 36px;
+  border-radius: 20px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  max-width: 300px;
+  width: 90%;
+}
+.draft-loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 3px solid rgba(255,255,255,0.1);
+  border-top-color: #FF5722;
+  border-radius: 50%;
+  margin: 0 auto 20px;
+  animation: dlSpin 0.8s linear infinite;
+}
+@keyframes dlSpin { to { transform: rotate(360deg); } }
+.draft-loading-title {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 1.6rem;
+  letter-spacing: 2px;
+  color: #fff;
+  margin-bottom: 8px;
+}
+.draft-loading-msg {
+  font-size: 0.85rem;
+  color: rgba(255,255,255,0.5);
+  line-height: 1.4;
+}
+
+/* Inline utility overrides */
+.spacer-sm { height: 12px; }
+.spacer-md { height: 16px; }
+.spacer-xs { height: 8px; }
+.spacer-10 { height: 10px; }
+
+.join-code-input {
+  text-transform: uppercase;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 8px;
+  text-align: center;
+  margin-bottom: 10px;
+  font-size: 1.2rem;
+}
+
+.host-controls-hidden { display: none; }
+
+.waiting-msg-hidden { display: none; }
+.waiting-msg-text {
+  text-align: center;
+  color: var(--text-dim);
+  margin-top: 28px;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.draft-games-bar-hidden { display: none; }
+
+.leave-lobby-btn {
+  width: 100%;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.leave-game-btn {
+  width: 100%;
+  color: var(--red);
+  border-color: rgba(255,61,90,0.2);
+  font-size: 0.85rem;
+}
+
+.back-home-btn { width: 100%; }
+
+.active-game-banner-hidden { display: none; }
+
+.winner-banner-hidden { display: none; }
+
+.matchup-view-hidden { display: none; }
+
+.rank-list-view-hidden { display: none; }
+
+.games-loading-msg {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  padding: 10px;
+}
+
+.live-spacer { height: 12px; }
+
 /* Mobile-first touch optimizations */
 * { -webkit-tap-highlight-color: transparent; }
 button, .player-card, .roster-player-card, .rpc-main, .rank-list-entry { touch-action: manipulation; }

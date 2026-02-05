@@ -384,6 +384,12 @@ function togglePublic() {
   lobbySettings.isPublic = !lobbySettings.isPublic;
   document.getElementById('publicToggle').classList.toggle('on');
   onSettingsChanged();
+  // Send to server immediately when toggling public status
+  if (isHost && myLobbyId) {
+    socket.emit('updateSettings', { 
+      settings: { isPublic: lobbySettings.isPublic } 
+    });
+  }
 }
 
 // Sync all UI controls to match lobbySettings (used on reconnect)
@@ -895,6 +901,16 @@ function renderPlayerPool() {
     const tierLabel = p.tierLabel || '⚪ Bench';
     const leagueFull = (p.league === 'nba' && nbaFull) || (p.league === 'nhl' && nhlFull);
     const isLocked = !amIDrafting || leagueFull;
+    
+    // Injury badge if present
+    let injuryBadge = '';
+    if (p.injuryStatus) {
+      const statusClass = p.injuryStatus.toLowerCase() === 'out' ? 'inj-out' : 
+                         p.injuryStatus.toLowerCase().includes('questionable') ? 'inj-questionable' : 
+                         'inj-probable';
+      injuryBadge = `<span class="pc-injury ${statusClass}">${p.injuryStatus}</span>`;
+    }
+    
     return `
     <div class="player-card ${p.league} ${isLocked?'disabled':''} ${leagueFull?'league-full':''}" onclick="${leagueFull?'':`openPlayerModal('${p.id}')`}">
       ${p.headshot?`<img class="pc-photo" src="${p.headshot}" onerror="this.outerHTML='<div class=\\'pc-photo-placeholder\\'><span class=\\'pc-pos-badge\\'>${p.position}</span></div>'">`:`<div class="pc-photo-placeholder"><span class="pc-pos-badge">${p.position}</span></div>`}
@@ -902,6 +918,7 @@ function renderPlayerPool() {
         <div class="pc-name">${p.name}</div>
         <div class="pc-meta"><div class="pc-league-dot ${p.league}"></div><span class="pc-team">${p.team} · ${p.position}</span></div>
         <div class="pc-avgs">${avgLine}</div>
+        ${injuryBadge}
       </div>
       <div class="pc-right">
         <div class="pc-proj">${p.projectedScore || 0}</div>
@@ -955,8 +972,6 @@ function draftPlayer(playerId) {
 }
 
 // Player Detail Modal
-const gameLogClientCache = {};
-
 async function openPlayerModal(playerId) {
   const p = availablePlayers.find(pl => pl.id === playerId);
   if (!p) return;
@@ -998,6 +1013,23 @@ async function openPlayerModal(playerId) {
   avgCells += `<div class="modal-avg-cell" style="border-color:rgba(255,87,34,0.3);"><div class="modal-avg-val" style="color:var(--accent);">${p.projectedScore||0}</div><div class="modal-avg-label">Proj FPts</div></div>`;
   document.getElementById('modalAvgGrid').innerHTML = avgCells;
 
+  // Show injury status if present
+  const injurySection = document.getElementById('modalInjuryStatus');
+  if (p.injuryStatus) {
+    const statusClass = p.injuryStatus.toLowerCase() === 'out' ? 'injury-out' : 
+                       p.injuryStatus.toLowerCase().includes('questionable') ? 'injury-questionable' : 
+                       'injury-probable';
+    injurySection.style.display = 'block';
+    injurySection.innerHTML = `
+      <div class="injury-banner ${statusClass}">
+        <span class="injury-icon">⚠️</span>
+        <span class="injury-text">${p.injuryStatus}</span>
+      </div>
+    `;
+  } else {
+    injurySection.style.display = 'none';
+  }
+
   const counts = getMyLeagueCounts();
   const slots = getLeagueSlots();
   const leagueFull = (p.league === 'nba' && counts.nba >= (slots.nba || 99)) ||
@@ -1012,64 +1044,6 @@ async function openPlayerModal(playerId) {
     draftBarHTML = `<button class="btn btn-hero" onclick="draftPlayer('${p.id}')">⚔️ DRAFT ${p.name.split(' ').pop().toUpperCase()}</button>`;
   }
   document.getElementById('modalDraftBar').innerHTML = draftBarHTML;
-
-  // Game log — use client-side cache
-  const logBody = document.getElementById('modalGameLogBody');
-  const athleteId = p.athleteId || p.id.replace('nba-','').replace('nhl-','');
-  const cacheKey = `${p.league}-${athleteId}`;
-
-  if (gameLogClientCache[cacheKey] && Date.now() - gameLogClientCache[cacheKey].ts < 600000) {
-    renderGameLog(logBody, gameLogClientCache[cacheKey].data, p);
-    return;
-  }
-
-  logBody.innerHTML = '<div class="modal-loading">Loading game log...</div>';
-
-  try {
-    const res = await fetch(`/api/gamelog/${p.league}/${athleteId}`);
-    const data = await res.json();
-    gameLogClientCache[cacheKey] = { data, ts: Date.now() };
-    renderGameLog(logBody, data, p);
-  } catch (e) {
-    logBody.innerHTML = '<div class="modal-loading" style="color:var(--text-dim);">Could not load game log</div>';
-  }
-}
-
-function renderGameLog(container, data, player) {
-  if (!data.games || data.games.length === 0) {
-    container.innerHTML = '<div class="modal-loading" style="color:var(--text-dim);">No recent games found</div>';
-    return;
-  }
-
-  container.innerHTML = data.games.map(g => {
-    let statLine = '', fpts = 0;
-    if (player.league === 'nba') {
-      const s = g.stats;
-      statLine = `${s.points}p ${s.rebounds}r ${s.assists}a ${s.steals}s ${s.blocks}b`;
-      fpts = (s.points*1) + (s.rebounds*1.5) + (s.assists*2) + (s.steals*3) + (s.blocks*3);
-      const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
-      if (cats.length >= 3) fpts += 10;
-      else if (cats.length >= 2) fpts += 5;
-    } else {
-      const s = g.stats;
-      if (s.saves !== undefined) {
-        statLine = `${s.saves}sv ${s.goalsAgainst}ga ${s.savePct||''}`;
-        fpts = (s.saves||0)*0.5;
-        if ((s.goalsAgainst||0) === 0 && (s.saves||0) > 0) fpts += 5;
-      } else {
-        statLine = `${s.goals}g ${s.assists}a ${s.shotsOnGoal||0}sog`;
-        fpts = (s.goals||0)*5 + (s.assists||0)*3 + (s.shotsOnGoal||0)*1;
-        if ((s.goals||0) >= 3) fpts += 3;
-      }
-    }
-    fpts = Math.round(fpts * 10) / 10;
-    return `<div class="modal-gamelog-row">
-      <div class="modal-gl-date">${g.date}</div>
-      <div class="modal-gl-opp">${g.opponent}</div>
-      <div class="modal-gl-stats">${statLine}</div>
-      <div class="modal-gl-fpts">${fpts}</div>
-    </div>`;
-  }).join('');
 }
 
 function closeModal() {

@@ -175,10 +175,22 @@ function goHome() {
 }
 function leaveGame() {
   if (!confirm('Leave this game permanently? You won\'t be able to rejoin.')) return;
-  clearActiveGame();
-  mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
-  localStorage.setItem('dr_sessionId', mySessionId);
-  myLobbyId = null; isHost = false;
+  
+  console.log('🚪 Leaving game:', { myLobbyId, mySessionId });
+  
+  // Notify server to remove from THIS lobby only
+  if (myLobbyId && mySessionId) {
+    socket.emit('leaveGame', { sessionId: mySessionId, lobbyId: myLobbyId });
+  }
+  
+  // Clear this specific game from storage (keeps other games intact)
+  clearActiveGame(myLobbyId);
+  
+  // Reset current lobby state
+  myLobbyId = null;
+  isHost = false;
+  
+  // Go home (user can access other games from active games banner)
   showScreen('homeScreen');
   renderActiveGameBanner();
   showToast('Left the game');
@@ -372,6 +384,24 @@ function adjustMaxPlayers(delta) {
 function togglePublic() {
   lobbySettings.isPublic = !lobbySettings.isPublic;
   document.getElementById('publicToggle').classList.toggle('on');
+  
+  // Immediately update server so public lobby list updates in real-time
+  console.log('Toggle public:', {
+    isPublic: lobbySettings.isPublic,
+    isHost,
+    myLobbyId,
+    willEmit: isHost && myLobbyId
+  });
+  
+  if (isHost && myLobbyId) {
+    socket.emit('updateSettings', { 
+      settings: { isPublic: lobbySettings.isPublic } 
+    });
+    console.log('✅ Sent updateSettings to server');
+  } else {
+    console.warn('❌ Cannot send updateSettings:', { isHost, myLobbyId });
+  }
+  
   onSettingsChanged();
 }
 

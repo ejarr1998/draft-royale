@@ -460,7 +460,14 @@ function showWinnerBanner(players) {
 
 // Navigation
 function goHome() {
-  window.location.href = '/';
+  // If they came from within the app (lobby/draft), go back
+  // Otherwise, go to main app with lobby parameter so they can rejoin
+  if (window.history.length > 1 && document.referrer.includes(window.location.host)) {
+    window.history.back();
+  } else {
+    // Direct link - redirect to main app with lobby ID so they can see lobby screen
+    window.location.href = `/?lobby=${myLobbyId}`;
+  }
 }
 
 function leaveGame() {

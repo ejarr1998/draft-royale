@@ -1,1406 +1,2657 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const { v4: uuidv4 } = require('uuid');
-
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
-
-app.use(express.json());
-app.use(express.static('public'));
-
-// ============================================
-// CONFIGURATION
-// ============================================
-const DRAFT_TIME_PER_PICK = 30; // seconds
-const ROSTER_SIZE = 5;
-const SCORE_UPDATE_INTERVAL = 30000; // 30 seconds
-
-// Scoring systems
-const SCORING = {
-  nba: {
-    points: 1,
-    rebounds: 1.5,
-    assists: 2,
-    steals: 3,
-    blocks: 3,
-    doubleDouble: 5,
-    tripleDouble: 10
-  },
-  nhl: {
-    goals: 5,
-    assists: 3,
-    shotsOnGoal: 1,
-    blockedShots: 2,
-    saves: 0.5,
-    shutout: 5,
-    hatTrick: 3
-  }
-};
-
-// ============================================
-// STATE
-// ============================================
-const lobbies = {};      // lobbyId -> lobby object
-const publicLobbies = []; // list of lobbyIds waiting for players
-const sessions = {};     // sessionId -> { lobbyId, socketId, playerName }
-
-// ============================================
-// LOBBY MANAGEMENT
-// ============================================
-function createLobby(hostName, maxPlayers, isPublic, settings = {}) {
-  const lobbyId = uuidv4().slice(0, 6).toUpperCase();
-  
-  lobbies[lobbyId] = {
-    id: lobbyId,
-    host: null, // set when host connects via socket
-    hostName,
-    maxPlayers: Math.min(Math.max(maxPlayers, 1), 8),
-    isPublic,
-    state: 'waiting', // waiting -> drafting -> live -> finished
-    players: [],
-    draftOrder: [],
-    currentPick: 0,
-    draftTimer: null,
-    availablePlayers: [],
-    games: [],
-    scoreInterval: null,
-    createdAt: Date.now(),
-    // Configurable settings
-    settings: {
-      draftType: settings.draftType || 'snake',       // 'snake' | 'linear'
-      timePerPick: Math.min(Math.max(settings.timePerPick || 30, 10), 120),  // 10-120 seconds
-      leagues: settings.leagues || 'both',              // 'nba' | 'nhl' | 'both'
-      rosterSlots: settings.rosterSlots || { nba: 4, nhl: 2 },  // picks per league
-      gameDate: settings.gameDate || null,              // null = today, or ISO date string
-    }
-  };
-  
-  if (isPublic) {
-    publicLobbies.push(lobbyId);
-  }
-  
-  return lobbies[lobbyId];
-}
-
-function getRosterSize(settings) {
-  const slots = settings.rosterSlots || { nba: 4, nhl: 2 };
-  if (settings.leagues === 'nba') return slots.nba || 5;
-  if (settings.leagues === 'nhl') return slots.nhl || 5;
-  return (slots.nba || 0) + (slots.nhl || 0);
-}
-
-function generateDraftOrder(players, rosterSize, draftType = 'snake') {
-  const order = [];
-  const numPlayers = players.length;
-  
-  for (let round = 0; round < rosterSize; round++) {
-    if (draftType === 'snake' && round % 2 === 1) {
-      // Reverse for odd rounds in snake draft
-      for (let i = numPlayers - 1; i >= 0; i--) {
-        order.push(players[i].id);
-      }
-    } else {
-      // Forward (always for linear, even rounds for snake)
-      for (let i = 0; i < numPlayers; i++) {
-        order.push(players[i].id);
-      }
-    }
-  }
-  
-  return order;
-}
-
-// ============================================
-// SPORTS API - FETCH TODAY'S GAMES & PLAYERS
-// ============================================
-async function fetchNBAGames(targetDate) {
-  try {
-    const d = targetDate ? new Date(targetDate) : new Date();
-    const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-    const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${dateStr}`);
-    const data = await response.json();
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Draft Royale - Daily Fantasy Battles</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     
-    return (data.events || []).map(event => {
-      const home = event.competitions[0].competitors.find(c => c.homeAway === 'home');
-      const away = event.competitions[0].competitors.find(c => c.homeAway === 'away');
-      return {
-        gameId: event.id,
-        league: 'nba',
-        homeTeam: home?.team?.abbreviation,
-        awayTeam: away?.team?.abbreviation,
-        homeTeamId: home?.team?.id,
-        awayTeamId: away?.team?.id,
-        homeName: home?.team?.displayName,
-        awayName: away?.team?.displayName,
-        startTime: new Date(event.date),
-        state: event.status?.type?.state,
-        status: event.status?.type?.shortDetail
-      };
+    :root {
+      --bg: #0c0f1a;
+      --bg2: #111528;
+      --surface: #171c30;
+      --surface-up: #1e2440;
+      --border: rgba(255,255,255,0.06);
+      --border-light: rgba(255,255,255,0.12);
+      --text: #f0f0f8;
+      --text-dim: #6e7499;
+      --text-mid: #9da3c4;
+      --accent: #ff5722;
+      --accent2: #ff8a50;
+      --nba: #ff6d2e;
+      --nhl: #00b4d8;
+      --green: #00e676;
+      --red: #ff3d5a;
+      --gold: #ffd740;
+      --silver: #b0bec5;
+      --bronze: #d4895a;
+    }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      overflow-x: hidden;
+      overscroll-behavior: none;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(circle at 15% 10%, rgba(255,87,34,0.07) 0%, transparent 40%),
+        radial-gradient(circle at 85% 85%, rgba(0,180,216,0.06) 0%, transparent 40%),
+        repeating-linear-gradient(135deg, transparent 0px, transparent 40px, rgba(255,255,255,0.008) 40px, rgba(255,255,255,0.008) 41px);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .app {
+      position: relative;
+      z-index: 1;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 16px;
+      min-height: 100dvh;
+    }
+
+    .screen { display: none; }
+    .screen.active { display: block; animation: screenIn 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+
+    @keyframes screenIn {
+      from { opacity: 0; transform: translateY(16px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* HOME */
+    .hero { text-align: center; padding: 48px 0 10px; }
+
+    .hero-badge {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+      color: var(--accent); background: rgba(255,87,34,0.1); border: 1px solid rgba(255,87,34,0.2);
+      border-radius: 20px; padding: 5px 14px; margin-bottom: 16px;
+    }
+
+    .hero h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 4.2rem; letter-spacing: 3px; line-height: 0.95; color: #fff;
+    }
+    .hero h1 .accent {
+      background: linear-gradient(135deg, var(--accent), var(--accent2), var(--gold));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .hero-sub { color: var(--text-dim); font-size: 1rem; margin-top: 12px; font-weight: 500; }
+    .hero-icons { font-size: 2rem; margin-top: 12px; letter-spacing: 8px; }
+
+    .home-card {
+      background: var(--surface); border-radius: 20px; border: 1px solid var(--border);
+      padding: 24px; margin-top: 28px;
+    }
+    .home-card-title {
+      font-family: 'Bebas Neue', sans-serif; font-size: 1.3rem; letter-spacing: 1.5px;
+      color: var(--text-mid); margin-bottom: 16px;
+    }
+
+    .input {
+      width: 100%; padding: 14px 18px; border-radius: 12px;
+      border: 2px solid var(--border); background: var(--bg2);
+      color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 1rem; font-weight: 500;
+      transition: border-color 0.25s, box-shadow 0.25s;
+    }
+    .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(255,87,34,0.12); }
+    .input::placeholder { color: var(--text-dim); }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 15px 24px; border-radius: 14px; border: none;
+      font-family: 'DM Sans', sans-serif; font-size: 1rem; font-weight: 700;
+      cursor: pointer; transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative; overflow: hidden;
+    }
+    .btn:active { transform: scale(0.96); }
+
+    .btn-hero {
+      width: 100%; padding: 18px 24px; font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.35rem; letter-spacing: 2px;
+      background: linear-gradient(135deg, var(--accent), #ff8a50); color: #fff;
+      box-shadow: 0 8px 32px rgba(255,87,34,0.3);
+    }
+    .btn-hero:hover { box-shadow: 0 10px 40px rgba(255,87,34,0.4); transform: translateY(-2px); }
+    .btn-hero::after {
+      content: ''; position: absolute; inset: 0;
+      background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.15) 50%, transparent 60%);
+      transform: translateX(-100%); transition: transform 0.5s;
+    }
+    .btn-hero:hover::after { transform: translateX(100%); }
+
+    .btn-glass {
+      width: 100%; background: rgba(255,255,255,0.04); color: var(--text);
+      border: 1px solid var(--border-light); backdrop-filter: blur(4px);
+    }
+    .btn-glass:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.2); }
+
+    .btn-small { padding: 10px 18px; font-size: 0.85rem; border-radius: 10px; }
+
+    .action-row { display: flex; gap: 10px; margin-top: 12px; }
+    .action-row .input { flex: 1; }
+    .action-row .btn { flex-shrink: 0; }
+
+    .or-divider {
+      display: flex; align-items: center; gap: 14px; margin: 16px 0;
+      color: var(--text-dim); font-size: 0.8rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .or-divider::before, .or-divider::after { content: ''; flex: 1; height: 1px; background: var(--border-light); }
+
+    .games-section { margin-top: 28px; }
+
+    .date-picker-row {
+      display: flex; gap: 6px; margin-bottom: 10px;
+      overflow-x: auto; -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    .date-picker-row::-webkit-scrollbar { display: none; }
+
+    .date-chip {
+      flex-shrink: 0; padding: 8px 14px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--text-mid); font-family: 'DM Sans', sans-serif;
+      font-size: 0.78rem; font-weight: 600; cursor: pointer;
+      transition: all 0.2s; white-space: nowrap;
+      display: flex; flex-direction: column; align-items: center; gap: 1px;
+    }
+    .date-chip:hover { background: rgba(255,255,255,0.06); }
+    .date-chip.date-active {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+      box-shadow: 0 2px 8px rgba(255,87,34,0.25);
+    }
+    .date-chip .date-day { font-size: 0.65rem; text-transform: uppercase; opacity: 0.7; }
+    .date-chip .date-count {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; opacity: 0.6;
+    }
+
+    .section-label {
+      font-family: 'Bebas Neue', sans-serif; font-size: 1.15rem; letter-spacing: 1.5px;
+      color: var(--text-dim); margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+    }
+
+    .games-scroll {
+      display: flex; gap: 10px; overflow-x: auto; padding-bottom: 8px;
+      scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+    }
+    .games-scroll::-webkit-scrollbar { height: 3px; }
+    .games-scroll::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+    .game-tile {
+      flex-shrink: 0; scroll-snap-align: start; padding: 14px 16px; border-radius: 14px;
+      background: var(--surface); border: 1px solid var(--border); min-width: 180px;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .game-tile:hover { transform: translateY(-2px); border-color: var(--border-light); }
+
+    .game-tile-league {
+      display: inline-block; font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px;
+      padding: 3px 8px; border-radius: 5px; margin-bottom: 8px;
+    }
+    .game-tile-league.nba { background: rgba(255,109,46,0.15); color: var(--nba); }
+    .game-tile-league.nhl { background: rgba(0,180,216,0.15); color: var(--nhl); }
+
+    .game-tile-teams { font-weight: 700; font-size: 0.9rem; line-height: 1.4; }
+    .game-tile-time { color: var(--text-dim); font-size: 0.75rem; margin-top: 4px; }
+    .game-tile-live { color: var(--red); font-weight: 700; }
+    .game-tile-final { color: var(--text-dim); font-weight: 600; opacity: 0.7; }
+    .game-tile-started { opacity: 0.45; }
+    .game-tile-draftable {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; font-weight: 700;
+      color: var(--green); margin-top: 6px; letter-spacing: 0.5px;
+    }
+
+    .scoring-panel {
+      margin-top: 28px; background: var(--surface); border-radius: 20px;
+      border: 1px solid var(--border); overflow: hidden;
+    }
+    .scoring-toggle {
+      width: 100%; padding: 16px 20px; background: none; border: none;
+      color: var(--text-dim); font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.1rem; letter-spacing: 1.5px; text-align: left; cursor: pointer;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .scoring-toggle .arrow { transition: transform 0.3s; }
+    .scoring-toggle.open .arrow { transform: rotate(180deg); }
+    .scoring-body { display: none; padding: 0 20px 20px; }
+    .scoring-body.open { display: block; }
+    .scoring-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .score-col-title {
+      font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 1px;
+      margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+    }
+    .score-col-title.nba { color: var(--nba); }
+    .score-col-title.nhl { color: var(--nhl); }
+    .score-line { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--text-dim); padding: 3px 0; }
+    .score-line .val { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--text-mid); }
+
+    /* LOBBY */
+    .lobby-top { text-align: center; padding: 36px 0 24px; }
+    .lobby-top-label {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 2px; color: var(--text-dim);
+    }
+    .lobby-code-display {
+      font-family: 'Bebas Neue', sans-serif; font-size: 3.5rem; letter-spacing: 14px;
+      color: #fff; position: relative; display: inline-block; margin: 8px 0 12px;
+    }
+    .lobby-code-display::after {
+      content: ''; position: absolute; bottom: -4px; left: 0; right: 0;
+      height: 3px; border-radius: 2px; background: linear-gradient(90deg, var(--accent), var(--accent2));
+    }
+
+    .copy-btn {
+      padding: 8px 20px; border-radius: 10px; border: 1px solid var(--border-light);
+      background: rgba(255,255,255,0.04); color: var(--text-mid);
+      font-family: 'DM Sans', sans-serif; font-size: 0.8rem; font-weight: 600; cursor: pointer;
+      transition: all 0.2s;
+    }
+    .copy-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    .lobby-code-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+
+    .lobby-players-section { margin-top: 24px; }
+
+    .player-card-lobby {
+      display: flex; align-items: center; gap: 14px; padding: 16px 18px;
+      border-radius: 16px; background: var(--surface); border: 1px solid var(--border);
+      margin-bottom: 10px; position: relative; overflow: hidden;
+      transition: all 0.3s; animation: cardSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+    @keyframes cardSlideIn {
+      from { opacity: 0; transform: translateX(-20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    .player-card-lobby.is-you {
+      border-color: rgba(255,87,34,0.4);
+      background: linear-gradient(135deg, rgba(255,87,34,0.06), rgba(255,138,80,0.03));
+    }
+    .player-card-lobby.is-you::before {
+      content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+      background: linear-gradient(180deg, var(--accent), var(--accent2)); border-radius: 4px 0 0 4px;
+    }
+
+    .player-avatar {
+      width: 42px; height: 42px; border-radius: 12px; display: flex;
+      align-items: center; justify-content: center;
+      font-size: 1.2rem; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .avatar-1 { background: linear-gradient(135deg, #ff5722, #ff9800); }
+    .avatar-2 { background: linear-gradient(135deg, #00b4d8, #0288d1); }
+    .avatar-3 { background: linear-gradient(135deg, #00e676, #00c853); }
+    .avatar-4 { background: linear-gradient(135deg, #aa00ff, #e040fb); }
+    .avatar-5 { background: linear-gradient(135deg, #ffd740, #ffab00); }
+
+    .player-card-name { font-weight: 700; font-size: 1rem; flex: 1; }
+    .player-card-you { font-size: 0.7rem; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; }
+    .host-chip {
+      font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+      padding: 4px 10px; border-radius: 6px; background: rgba(255,87,34,0.12); color: var(--accent);
+    }
+    .dc-chip {
+      font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+      padding: 3px 8px; border-radius: 5px; background: rgba(255,50,50,0.15); color: #ff5555;
+    }
+    .player-card-lobby.disconnected { opacity: 0.45; }
+    .empty-slot-lobby {
+      padding: 16px 18px; border-radius: 16px; border: 2px dashed var(--border-light);
+      margin-bottom: 10px; text-align: center; color: var(--text-dim); font-size: 0.85rem;
+      animation: breathe 3s ease-in-out infinite;
+    }
+    @keyframes breathe { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.7; } }
+
+    .lobby-controls { margin-top: 24px; }
+
+    .settings-section-title {
+      font-family: 'Bebas Neue', sans-serif; font-size: 0.9rem; letter-spacing: 1.5px;
+      color: var(--text-dim); margin: 18px 0 8px; padding-left: 4px;
+    }
+    .settings-section-title:first-child { margin-top: 0; }
+
+    .settings-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px; border-radius: 14px; background: var(--surface);
+      border: 1px solid var(--border); margin-bottom: 8px;
+    }
+    .settings-row label { font-weight: 600; font-size: 0.88rem; }
+    .settings-row .settings-desc {
+      font-size: 0.68rem; color: var(--text-dim); margin-top: 1px;
+    }
+    .settings-row select {
+      padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-light);
+      background: var(--bg2); color: var(--text); font-family: 'DM Sans', sans-serif;
+      font-weight: 600; font-size: 0.88rem; min-height: 38px;
+    }
+
+    /* Segmented control */
+    .seg-control {
+      display: flex; border-radius: 10px; border: 1px solid var(--border);
+      overflow: hidden; background: var(--bg2);
+    }
+    .seg-btn {
+      flex: 1; padding: 9px 10px; border: none; background: transparent;
+      color: var(--text-dim); font-family: 'DM Sans', sans-serif; font-size: 0.78rem;
+      font-weight: 600; cursor: pointer; transition: all 0.2s; white-space: nowrap;
+      text-align: center;
+    }
+    .seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+    .seg-btn.seg-active {
+      background: var(--accent); color: #fff;
+      box-shadow: 0 2px 8px rgba(255,87,34,0.2);
+    }
+    .seg-btn.seg-active-nhl {
+      background: var(--nhl); color: #fff;
+      box-shadow: 0 2px 8px rgba(0,180,216,0.2);
+    }
+    .seg-btn.seg-active-both {
+      background: linear-gradient(135deg, var(--nba), var(--nhl)); color: #fff;
+    }
+
+    /* Time stepper */
+    .stepper {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .stepper-btn {
+      width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--border-light);
+      background: var(--bg2); color: var(--text); font-size: 1rem; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s;
+    }
+    .stepper-btn:hover { background: rgba(255,255,255,0.08); }
+    .stepper-btn:active { transform: scale(0.92); }
+    .stepper-val {
+      font-family: 'JetBrains Mono', monospace; font-size: 1rem; font-weight: 700;
+      min-width: 36px; text-align: center;
+    }
+    .stepper-unit { font-size: 0.65rem; color: var(--text-dim); }
+
+    /* Roster slots per league */
+    .roster-slots-control {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .slot-control {
+      display: flex; align-items: center; gap: 4px;
+    }
+    .slot-control .stepper-btn { width: 28px; height: 28px; font-size: 0.85rem; border-radius: 6px; }
+    .slot-control .stepper-val { min-width: 20px; font-size: 0.95rem; }
+    .slot-league { font-size: 0.85rem; line-height: 1; }
+    .slot-divider {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+      color: var(--text-dim); font-weight: 700;
+    }
+    .slot-total {
+      font-size: 1.1rem; color: var(--accent); min-width: 24px;
+    }
+
+    .toggle-switch {
+      position: relative; width: 44px; height: 24px; background: var(--border-light);
+      border-radius: 12px; cursor: pointer; transition: background 0.3s; flex-shrink: 0;
+    }
+    .toggle-switch.on { background: var(--accent); }
+    .toggle-switch::after {
+      content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+      border-radius: 50%; background: #fff; transition: transform 0.3s;
+    }
+    .toggle-switch.on::after { transform: translateX(20px); }
+
+    .settings-summary {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.65rem;
+      color: var(--text-dim); text-align: center; margin: 10px 0 4px;
+      letter-spacing: 0.3px;
+    }
+
+    /* DRAFT */
+    .draft-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px; border-radius: 16px; background: var(--surface);
+      border: 1px solid var(--border); margin-bottom: 16px;
+    }
+    .draft-turn-info { flex: 1; }
+    .draft-turn-label { font-size: 0.75rem; color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+    .draft-turn-name { font-family: 'Bebas Neue', sans-serif; font-size: 1.6rem; letter-spacing: 1px; }
+    .draft-turn-name.is-you { color: var(--accent); }
+
+    .draft-clock { text-align: center; }
+    .draft-clock-num { font-family: 'JetBrains Mono', monospace; font-size: 2.4rem; font-weight: 700; line-height: 1; }
+    .draft-clock-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); font-weight: 700; }
+    .draft-clock.urgent .draft-clock-num { color: var(--red); animation: clockPulse 0.5s ease infinite; }
+    @keyframes clockPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.05); } }
+
+    .draft-round-pill {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 700;
+      padding: 5px 12px; border-radius: 8px; background: rgba(255,255,255,0.05);
+      color: var(--text-mid); letter-spacing: 0.5px;
+    }
+
+    .roster-strip {
+      display: flex; gap: 8px; overflow-x: auto; padding-bottom: 10px; margin-bottom: 16px;
+    }
+    .roster-strip::-webkit-scrollbar { height: 3px; }
+    .roster-strip::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+    .roster-mini {
+      flex-shrink: 0; width: 170px; padding: 14px; border-radius: 14px;
+      background: var(--surface); border: 1px solid var(--border); transition: all 0.3s;
+    }
+    .roster-mini.active-drafter {
+      border-color: var(--accent);
+      box-shadow: 0 0 20px rgba(255,87,34,0.12), inset 0 0 30px rgba(255,87,34,0.03);
+    }
+    .roster-mini.is-you { border-color: rgba(0,230,118,0.3); }
+
+    .roster-mini-name {
+      font-weight: 700; font-size: 0.85rem; margin-bottom: 10px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .picking-badge {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.55rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1px; padding: 3px 7px; border-radius: 5px;
+      background: rgba(255,87,34,0.15); color: var(--accent);
+      animation: badgePop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    @keyframes badgePop { from { transform: scale(0); } to { transform: scale(1); } }
+
+    .mini-pick { padding: 6px 8px; border-radius: 8px; margin-bottom: 4px; font-size: 0.72rem; font-weight: 600; }
+    .mini-pick.filled { background: rgba(255,255,255,0.04); border: 1px solid var(--border); }
+    .mini-pick.filled.nba { border-left: 3px solid var(--nba); }
+    .mini-pick.filled.nhl { border-left: 3px solid var(--nhl); }
+    .mini-pick.empty { border: 1px dashed var(--border); color: var(--text-dim); text-align: center; font-size: 0.7rem; }
+    .mini-pick-name { font-weight: 700; }
+    .mini-pick-team { color: var(--text-dim); font-size: 0.65rem; }
+
+    .pool-header { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+
+    .filter-row {
+      display: flex; gap: 6px; align-items: center;
+      overflow-x: auto; flex-wrap: nowrap;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none; /* Firefox */
+    }
+    .filter-row::-webkit-scrollbar { display: none; }
+    .filter-row .filter-chip { flex-shrink: 0; }
+
+    .search-row { display: flex; gap: 6px; align-items: center; }
+
+    .filter-chip {
+      padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: transparent; color: var(--text-dim); font-family: 'DM Sans', sans-serif;
+      font-size: 0.72rem; font-weight: 600; cursor: pointer; transition: all 0.2s;
+    }
+    .filter-chip:hover { background: rgba(255,255,255,0.04); }
+    .filter-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 2px 12px rgba(255,87,34,0.2); }
+    .filter-chip.active-nhl { background: var(--nhl); color: #fff; border-color: var(--nhl); box-shadow: 0 2px 12px rgba(0,180,216,0.2); }
+    .filter-chip.active-pos { background: rgba(255,255,255,0.1); color: var(--text); border-color: rgba(255,255,255,0.2); }
+
+    .search-input {
+      flex: 1; min-width: 120px; padding: 6px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg2); color: var(--text);
+      font-family: 'DM Sans', sans-serif; font-size: 0.82rem;
+    }
+    .search-input:focus { outline: none; border-color: var(--accent); }
+
+    .pool-count {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.65rem;
+      color: var(--text-dim); margin-left: auto; white-space: nowrap;
+    }
+
+    .player-pool-grid {
+      display: grid; grid-template-columns: 1fr; gap: 5px;
+      max-height: min(420px, 45vh); overflow-y: auto; padding-right: 4px;
+    }
+
+    /* Slot indicator */
+    .slot-indicator-row {
+      display: flex; gap: 6px; margin-bottom: 6px; min-height: 0;
+    }
+    .slot-pill {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 700;
+      padding: 4px 10px; border-radius: 8px;
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text-mid);
+    }
+    .slot-pill.slot-full {
+      background: rgba(255,87,34,0.1); border-color: rgba(255,87,34,0.3);
+      color: var(--accent);
+    }
+
+    /* League-full player card */
+    .player-card.league-full {
+      opacity: 0.35; pointer-events: none;
+    }
+    .player-pool-grid::-webkit-scrollbar { width: 4px; }
+    .player-pool-grid::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 4px; }
+
+    .player-card {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      border-radius: 12px; background: var(--surface); border: 1px solid var(--border);
+      cursor: pointer; transition: all 0.2s; position: relative; overflow: hidden;
+    }
+    .player-card::before {
+      content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 0;
+      transition: width 0.3s, opacity 0.3s; opacity: 0;
+    }
+    .player-card.nba::before { background: linear-gradient(90deg, rgba(255,109,46,0.15), transparent); }
+    .player-card.nhl::before { background: linear-gradient(90deg, rgba(0,180,216,0.15), transparent); }
+    .player-card:hover { border-color: var(--border-light); background: var(--surface-up); }
+    .player-card:hover::before { width: 100%; opacity: 1; }
+    .player-card.disabled { opacity: 0.25; pointer-events: none; filter: grayscale(0.8); }
+
+    .pc-photo { width: 42px; height: 42px; border-radius: 10px; object-fit: cover; background: var(--bg2); flex-shrink: 0; }
+    .pc-photo-placeholder {
+      width: 42px; height: 42px; border-radius: 10px; background: var(--surface-up);
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .pc-pos-badge { font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; font-weight: 700; color: var(--text-dim); }
+
+    .pc-info { flex: 1; min-width: 0; }
+    .pc-name { font-weight: 700; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pc-meta { display: flex; align-items: center; gap: 5px; margin-top: 1px; }
+
+    .pc-league-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .pc-league-dot.nba { background: var(--nba); }
+    .pc-league-dot.nhl { background: var(--nhl); }
+    .pc-team { font-size: 0.7rem; color: var(--text-dim); font-weight: 500; }
+
+    .pc-avgs {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.6rem;
+      color: var(--text-dim); margin-top: 2px; letter-spacing: -0.2px;
+    }
+
+    .pc-right { text-align: right; flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+    .pc-proj {
+      font-family: 'JetBrains Mono', monospace; font-size: 1rem; font-weight: 700;
+      color: var(--accent);
+    }
+    .pc-proj-label { font-size: 0.55rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .pc-tier {
+      font-size: 0.55rem; font-weight: 700; padding: 2px 7px; border-radius: 4px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .pc-tier.star { background: rgba(255,215,64,0.15); color: var(--gold); }
+    .pc-tier.starter { background: rgba(0,230,118,0.12); color: var(--green); }
+    .pc-tier.solid { background: rgba(0,180,216,0.12); color: var(--nhl); }
+    .pc-tier.bench { background: rgba(255,255,255,0.05); color: var(--text-dim); }
+
+    .pc-actions {
+      display: flex; flex-direction: column; gap: 4px; flex-shrink: 0;
+    }
+
+    .draft-pick-btn {
+      padding: 8px 14px; border-radius: 8px; border: none;
+      font-family: 'DM Sans', sans-serif; font-weight: 700; font-size: 0.72rem; color: #fff;
+      cursor: pointer; transition: all 0.2s; flex-shrink: 0;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      box-shadow: 0 3px 10px rgba(255,87,34,0.25);
+    }
+    .draft-pick-btn:active { transform: scale(0.95); }
+
+    .info-btn {
+      padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+      background: transparent; color: var(--text-dim); font-size: 0.7rem;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .info-btn:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+
+    /* Player Detail Modal */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      z-index: 2000; display: none; align-items: flex-end; justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    .modal-overlay.open { display: flex; animation: modalFadeIn 0.2s ease; }
+    @keyframes modalFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+    .modal-sheet {
+      width: 100%; max-width: 860px; max-height: 85vh;
+      background: var(--bg2); border-radius: 20px 20px 0 0;
+      border: 1px solid var(--border-light); border-bottom: none;
+      overflow-y: auto; padding: 0; position: relative;
+      animation: sheetSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      overscroll-behavior: contain;
+    }
+    @keyframes sheetSlide { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+    .modal-handle {
+      width: 36px; height: 4px; border-radius: 2px; background: var(--border-light);
+      margin: 10px auto; cursor: pointer;
+    }
+
+    .modal-close-btn {
+      position: absolute; top: 10px; right: 14px;
+      width: 32px; height: 32px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--text-dim); font-size: 0.85rem; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s; z-index: 10;
+    }
+    .modal-close-btn:hover { background: var(--surface-up); color: var(--text); }
+
+    .modal-player-header {
+      display: flex; align-items: center; gap: 14px; padding: 8px 20px 16px;
+    }
+    .modal-photo { width: 56px; height: 56px; border-radius: 14px; object-fit: cover; background: var(--surface); }
+    .modal-photo-placeholder {
+      width: 56px; height: 56px; border-radius: 14px; background: var(--surface);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; font-weight: 700; color: var(--text-dim);
+    }
+    .modal-name { font-family: 'Bebas Neue', sans-serif; font-size: 1.5rem; letter-spacing: 1px; }
+    .modal-team-pos { font-size: 0.82rem; color: var(--text-dim); }
+
+    .modal-section {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+    }
+    .modal-section-title {
+      font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 1.5px;
+      color: var(--text-dim); margin-bottom: 10px;
+    }
+
+    .modal-avg-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 6px;
+    }
+    .modal-avg-cell {
+      text-align: center; padding: 10px 4px; border-radius: 10px;
+      background: var(--surface); border: 1px solid var(--border);
+    }
+    .modal-avg-val {
+      font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; font-weight: 700;
+    }
+    .modal-avg-label {
+      font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.5px; color: var(--text-dim); margin-top: 2px;
+    }
+
+    .modal-gamelog-row {
+      display: flex; align-items: center; gap: 10px; padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-gamelog-row:last-child { border-bottom: none; }
+    .modal-gl-date { font-size: 0.75rem; color: var(--text-dim); width: 50px; flex-shrink: 0; }
+    .modal-gl-opp { font-size: 0.8rem; font-weight: 600; width: 60px; flex-shrink: 0; }
+    .modal-gl-stats {
+      flex: 1; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: var(--text-mid);
+    }
+    .modal-gl-fpts {
+      font-family: 'JetBrains Mono', monospace; font-weight: 700;
+      font-size: 0.9rem; color: var(--accent); flex-shrink: 0;
+    }
+
+    .modal-loading {
+      text-align: center; padding: 24px; color: var(--text-dim); font-size: 0.85rem;
+    }
+
+    .modal-draft-bar {
+      padding: 16px 20px; border-top: 1px solid var(--border);
+      display: flex; gap: 10px; align-items: center;
+    }
+    .modal-draft-bar .btn-hero { flex: 1; padding: 14px; font-size: 1.15rem; }
+
+    .waiting-banner {
+      text-align: center; padding: 24px; border-radius: 14px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      border: 1px solid var(--border); color: var(--text-dim); font-size: 0.95rem;
+      font-weight: 500; margin-bottom: 12px;
+    }
+
+    .draft-log {
+      margin-top: 14px; max-height: 110px; overflow-y: auto; border-radius: 12px;
+      background: var(--surface); border: 1px solid var(--border); padding: 10px 14px;
+    }
+    .draft-log::-webkit-scrollbar { width: 3px; }
+    .draft-log::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+    .log-entry { font-size: 0.78rem; padding: 4px 0; color: var(--text-dim); animation: logIn 0.3s ease; }
+    @keyframes logIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+    .log-entry .picker { color: var(--text); font-weight: 700; }
+    .log-entry .picked { color: var(--accent); font-weight: 700; }
+    .log-entry .auto { color: var(--text-dim); font-style: italic; }
+
+    /* ============ LIVE MATCHUP ============ */
+    .live-pip-bar {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 18px 0 6px;
+    }
+    .live-pip {
+      width: 9px; height: 9px; border-radius: 50%; background: var(--red);
+      box-shadow: 0 0 10px var(--red); animation: livePip 1.5s ease infinite;
+    }
+    @keyframes livePip { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+    .live-pip-label {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 2px; color: var(--red);
+    }
+    .live-pip-bar.finished .live-pip { background: var(--green); box-shadow: 0 0 10px var(--green); animation: none; }
+    .live-pip-bar.finished .live-pip-label { color: var(--green); }
+
+    /* Matchup header */
+    .matchup-header {
+      border-radius: 20px; overflow: hidden; margin: 12px 0 20px;
+      background: var(--surface); border: 1px solid var(--border);
+      position: relative;
+    }
+    .matchup-header::before {
+      content: ''; position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 50% 0%, rgba(255,87,34,0.06) 0%, transparent 60%);
+      pointer-events: none;
+    }
+
+    .matchup-scores {
+      display: flex; align-items: center; padding: 24px 16px;
+      position: relative; z-index: 1;
+    }
+
+    .matchup-player {
+      flex: 1; text-align: center;
+    }
+
+    .mp-name {
+      font-weight: 700; font-size: 0.95rem; margin-bottom: 6px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .mp-name.is-you { color: var(--accent); }
+
+    .mp-score {
+      font-family: 'Bebas Neue', sans-serif; font-size: 3.6rem;
+      line-height: 1; letter-spacing: 2px;
+    }
+    .mp-score.leading { color: var(--green); }
+    .mp-score.trailing { color: var(--text-dim); }
+    .mp-score.tied { color: var(--text); }
+
+    .mp-label {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.6rem;
+      font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px;
+      color: var(--text-dim); margin-top: 4px;
+    }
+
+    .matchup-vs {
+      flex-shrink: 0; width: 52px; text-align: center;
+      font-family: 'Bebas Neue', sans-serif; font-size: 1.4rem;
+      letter-spacing: 2px; color: var(--text-dim); position: relative;
+    }
+    .matchup-vs::before, .matchup-vs::after {
+      content: ''; position: absolute; left: 50%; width: 1px; height: 24px;
+      background: var(--border-light);
+    }
+    .matchup-vs::before { top: -28px; }
+    .matchup-vs::after { bottom: -28px; }
+
+    .matchup-diff {
+      text-align: center; padding: 0 16px 16px; position: relative; z-index: 1;
+    }
+    .diff-pill {
+      display: inline-block; padding: 4px 14px; border-radius: 8px;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; font-weight: 700;
+    }
+    .diff-pill.winning { background: rgba(0,230,118,0.12); color: var(--green); }
+    .diff-pill.losing { background: rgba(255,61,90,0.12); color: var(--red); }
+    .diff-pill.tied-pill { background: rgba(255,255,255,0.06); color: var(--text-dim); }
+
+    /* Score pop animation */
+    @keyframes scorePop {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.08); }
+      100% { transform: scale(1); }
+    }
+    .score-changed { animation: scorePop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+    /* Score delta float */
+    .score-delta {
+      position: absolute; font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem; font-weight: 700; color: var(--green);
+      animation: deltaFloat 1.5s ease forwards; pointer-events: none;
+    }
+    @keyframes deltaFloat {
+      0% { opacity: 1; transform: translateY(0); }
+      100% { opacity: 0; transform: translateY(-30px); }
+    }
+
+    /* Roster sections */
+    .roster-section {
+      margin-bottom: 20px;
+    }
+    .roster-section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 0; margin-bottom: 6px; cursor: pointer;
+    }
+    .roster-section-left {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .roster-section-avatar {
+      width: 32px; height: 32px; border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.9rem; color: #fff;
+    }
+    .roster-section-name { font-weight: 700; font-size: 0.95rem; }
+    .roster-section-name .you-tag { color: var(--accent); font-size: 0.7rem; margin-left: 6px; }
+    .roster-section-total {
+      font-family: 'JetBrains Mono', monospace; font-weight: 700;
+      font-size: 1.1rem; color: var(--accent);
+    }
+
+    .roster-player-card {
+      border-radius: 14px; background: var(--surface); border: 1px solid var(--border);
+      margin-bottom: 6px; overflow: hidden; transition: all 0.25s;
+    }
+    .roster-player-card:hover { border-color: var(--border-light); }
+
+    .rpc-main {
+      display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+      cursor: pointer; transition: background 0.15s;
+    }
+    .rpc-main:hover { background: rgba(255,255,255,0.02); }
+
+    .rpc-league-accent {
+      width: 3px; height: 36px; border-radius: 2px; flex-shrink: 0;
+    }
+    .rpc-league-accent.nba { background: var(--nba); }
+    .rpc-league-accent.nhl { background: var(--nhl); }
+
+    .rpc-photo {
+      width: 38px; height: 38px; border-radius: 10px;
+      object-fit: cover; background: var(--bg2); flex-shrink: 0;
+    }
+    .rpc-photo-placeholder {
+      width: 38px; height: 38px; border-radius: 10px; background: var(--surface-up);
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; font-weight: 700; color: var(--text-dim);
+    }
+
+    .rpc-info { flex: 1; min-width: 0; }
+    .rpc-name { font-weight: 700; font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rpc-team { font-size: 0.72rem; color: var(--text-dim); }
+    .rpc-game-status {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.6rem;
+      font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+      margin-top: 2px;
+    }
+    .rpc-game-status.game-live { color: var(--red); }
+    .rpc-game-status.game-final { color: var(--green); }
+    .rpc-game-status.game-upcoming { color: var(--text-dim); }
+
+    .rpc-score-col { text-align: right; flex-shrink: 0; }
+    .rpc-fantasy {
+      font-family: 'JetBrains Mono', monospace; font-weight: 700;
+      font-size: 1.1rem; color: var(--accent);
+    }
+    .rpc-stat-preview { font-size: 0.65rem; color: var(--text-dim); margin-top: 1px; }
+
+    .rpc-chevron {
+      font-size: 0.7rem; color: var(--text-dim); flex-shrink: 0;
+      transition: transform 0.25s;
+    }
+    .rpc-chevron.open { transform: rotate(180deg); }
+
+    /* Expanded stats */
+    .rpc-details {
+      display: none; padding: 0 14px 14px 14px;
+    }
+    .rpc-details.visible { display: block; animation: detailsIn 0.25s ease; }
+    @keyframes detailsIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+
+    .stat-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+      gap: 6px;
+    }
+    .stat-cell {
+      text-align: center; padding: 10px 6px; border-radius: 10px;
+      background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+    }
+    .stat-val {
+      font-family: 'JetBrains Mono', monospace; font-size: 1.1rem;
+      font-weight: 700; color: var(--text);
+    }
+    .stat-val.has-points { color: var(--accent); }
+    .stat-label {
+      font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.5px; color: var(--text-dim); margin-top: 2px;
+    }
+    .stat-pts {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.6rem;
+      color: var(--accent2); margin-top: 1px;
+    }
+
+    .bonus-row {
+      display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
+    }
+    .bonus-chip {
+      padding: 4px 10px; border-radius: 6px; font-size: 0.7rem; font-weight: 700;
+      background: rgba(255,215,64,0.1); color: var(--gold);
+      border: 1px solid rgba(255,215,64,0.2);
+    }
+
+    /* Winner */
+    .winner-card {
+      text-align: center; padding: 36px 24px; border-radius: 20px; margin: 0 0 24px;
+      background: linear-gradient(135deg, rgba(255,215,64,0.08), rgba(255,87,34,0.05));
+      border: 1px solid rgba(255,215,64,0.2); position: relative; overflow: hidden;
+    }
+    .winner-card::before {
+      content: ''; position: absolute; inset: 0;
+      background: radial-gradient(circle at 50% 0%, rgba(255,215,64,0.12) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .winner-trophy { font-size: 3.5rem; margin-bottom: 10px; }
+    .winner-title {
+      font-family: 'Bebas Neue', sans-serif; font-size: 2.4rem; letter-spacing: 2px;
+      background: linear-gradient(135deg, var(--gold), var(--accent));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .winner-subtitle { color: var(--text-dim); font-size: 0.95rem; margin-top: 6px; }
+
+    /* 3+ players: use ranked list */
+    .rank-list-entry {
+      display: flex; align-items: center; gap: 12px; padding: 14px 16px;
+      border-radius: 14px; background: var(--surface); border: 1px solid var(--border);
+      margin-bottom: 8px; cursor: pointer; transition: all 0.2s;
+    }
+    .rank-list-entry:hover { background: var(--surface-up); }
+    .rank-list-entry.rank-1-entry {
+      border-color: rgba(255,215,64,0.3);
+      background: linear-gradient(135deg, rgba(255,215,64,0.06), rgba(255,87,34,0.03));
+    }
+    .rank-badge {
+      font-family: 'Bebas Neue', sans-serif; font-size: 1.6rem; width: 36px; text-align: center;
+    }
+    .rank-badge.rb1 { color: var(--gold); }
+    .rank-badge.rb2 { color: var(--silver); }
+    .rank-badge.rb3 { color: var(--bronze); }
+    .rank-badge.rb4 { color: var(--text-dim); }
+    .rank-info { flex: 1; }
+    .rank-pname { font-weight: 700; }
+    .rank-pmeta { font-size: 0.75rem; color: var(--text-dim); }
+    .rank-pts {
+      font-family: 'JetBrains Mono', monospace; font-size: 1.4rem; font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    /* Draft Recap */
+    .recap-header { text-align: center; padding: 24px 16px 12px; }
+    .recap-title {
+      font-family: 'Bebas Neue', sans-serif; font-size: 2rem; letter-spacing: 2px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .recap-subtitle { color: var(--text-dim); font-size: 0.85rem; margin-top: 4px; }
+    .recap-body { padding: 0 16px; max-height: 65vh; overflow-y: auto; }
+    .recap-player {
+      margin-bottom: 16px; padding: 12px; border-radius: 12px;
+      background: var(--surface); border: 1px solid var(--border);
+    }
+    .recap-pname {
+      font-family: 'Bebas Neue', sans-serif; font-size: 1.1rem; letter-spacing: 1px;
+      margin-bottom: 8px; color: var(--text-bright);
+    }
+    .recap-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+    .recap-pick {
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 8px;
+      border-left: 3px solid var(--border); background: rgba(255,255,255,0.03);
+      font-size: 0.78rem;
+    }
+    .recap-pick.nba { border-left-color: var(--nba); }
+    .recap-pick.nhl { border-left-color: var(--nhl); }
+    .recap-pick-num { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: var(--text-dim); }
+    .recap-pick-name { font-weight: 600; color: var(--text-mid); }
+    .recap-footer { padding: 16px; text-align: center; }
+
+    .toast {
+      position: fixed; bottom: 30px; left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      padding: 14px 28px; border-radius: 14px; background: var(--surface-up);
+      border: 1px solid var(--border-light); color: #fff; font-weight: 600; font-size: 0.9rem;
+      z-index: 1000; transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+    }
+    .toast.visible { transform: translateX(-50%) translateY(0); }
+    .toast.error { border-color: rgba(255,61,90,0.3); }
+
+    /* Active Game Banner */
+    .active-game-banner {
+      background: linear-gradient(135deg, rgba(255,87,34,0.12), rgba(255,138,80,0.06));
+      border: 1px solid rgba(255,87,34,0.35);
+      border-radius: 16px; padding: 16px 18px; margin-bottom: 20px;
+      display: flex; align-items: center; gap: 14px;
+      animation: bannerPulse 3s ease infinite;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .active-game-banner:hover { transform: translateY(-2px); border-color: var(--accent); }
+    @keyframes bannerPulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(255,87,34,0); }
+      50% { box-shadow: 0 0 20px rgba(255,87,34,0.15); }
+    }
+    .agb-pip {
+      width: 10px; height: 10px; border-radius: 50%; background: var(--accent);
+      box-shadow: 0 0 8px var(--accent); flex-shrink: 0;
+      animation: livePip 1.5s ease infinite;
+    }
+    .agb-info { flex: 1; }
+    .agb-title { font-weight: 700; font-size: 0.95rem; color: #fff; }
+    .agb-sub { font-size: 0.78rem; color: var(--text-mid); margin-top: 2px; }
+    .agb-btn {
+      padding: 10px 18px; border-radius: 10px; border: none;
+      background: var(--accent); color: #fff; font-weight: 700;
+      font-family: 'Bebas Neue', sans-serif; font-size: 1rem; letter-spacing: 1.5px;
+      cursor: pointer; transition: all 0.2s; flex-shrink: 0;
+    }
+    .agb-btn:hover { background: var(--accent2); }
+    .agb-leave {
+      padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-light);
+      background: none; color: var(--text-dim); font-size: 0.7rem; font-weight: 600;
+      font-family: 'DM Sans', sans-serif; cursor: pointer; transition: all 0.2s;
+      flex-shrink: 0; margin-left: -6px;
+    }
+    .agb-leave:hover { color: var(--red); border-color: rgba(255,61,90,0.3); }
+
+    /* Mobile-first touch optimizations */
+    * { -webkit-tap-highlight-color: transparent; }
+    button, .player-card, .roster-player-card, .rpc-main, .rank-list-entry { touch-action: manipulation; }
+
+    @media (max-width: 600px) {
+      /* Global */
+      .app { padding: 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+
+      /* Home */
+      .hero { padding: 32px 0 8px; }
+      .hero h1 { font-size: 2.6rem; }
+      .hero-badge { font-size: 0.6rem; }
+      .section-label { font-size: 1rem; }
+      .btn-hero { padding: 16px 20px; font-size: 1.2rem; }
+      .btn { padding: 14px 20px; }
+      .input { padding: 13px 14px; font-size: 0.95rem; }
+
+      /* Lobby */
+      .lobby-code-display { font-size: 2.4rem; letter-spacing: 8px; }
+      .copy-btn { padding: 10px 20px; } /* bigger tap target */
+      .scoring-cols { grid-template-columns: 1fr; }
+
+      /* Draft status */
+      .draft-status-bar { padding: 14px; gap: 8px; border-radius: 12px; flex-wrap: wrap; }
+      .draft-round-pill { font-size: 0.6rem; padding: 3px 8px; }
+      .draft-turn-name { font-size: 1.1rem; }
+      .draft-clock-num { font-size: 1.8rem; }
+
+      /* Roster strip */
+      .roster-strip { gap: 6px; }
+      .roster-mini { width: 150px; padding: 10px; }
+      .mini-pick { padding: 5px 7px; font-size: 0.68rem; }
+      .roster-mini-name { font-size: 0.8rem; }
+
+      /* Draft pool - filters */
+      .pool-header { gap: 5px; margin-bottom: 6px; }
+      .filter-row { gap: 4px; }
+      .filter-chip { padding: 8px 12px; font-size: 0.72rem; min-height: 36px; }
+      .search-input { padding: 8px 10px; font-size: 0.82rem; min-height: 36px; }
+
+      /* Player cards - bigger touch targets, stacked info */
+      .player-pool-grid { gap: 4px; max-height: 50vh; }
+      .player-card { padding: 12px 10px; gap: 8px; min-height: 64px; }
+      .pc-photo, .pc-photo-placeholder { width: 38px; height: 38px; border-radius: 8px; }
+      .pc-name { font-size: 0.82rem; }
+      .pc-team { font-size: 0.68rem; }
+      .pc-avgs { font-size: 0.58rem; }
+      .pc-proj { font-size: 0.9rem; }
+      .pc-proj-label { font-size: 0.5rem; }
+      .pc-tier { font-size: 0.5rem; padding: 2px 5px; }
+
+      /* Draft log */
+      .draft-log { max-height: 80px; padding: 8px 10px; }
+      .log-entry { font-size: 0.72rem; }
+
+      /* Matchup header */
+      .mp-score { font-size: 2.6rem; }
+      .mp-name { font-size: 0.85rem; }
+      .matchup-vs { width: 40px; font-size: 1.1rem; }
+      .matchup-scores { padding: 18px 10px; }
+
+      /* Live rosters */
+      .roster-player-card { border-radius: 10px; }
+      .rpc-main { padding: 10px; gap: 8px; }
+      .rpc-photo, .rpc-photo-placeholder { width: 34px; height: 34px; border-radius: 8px; }
+      .rpc-name { font-size: 0.82rem; }
+      .rpc-fantasy { font-size: 0.95rem; }
+      .stat-grid { grid-template-columns: repeat(3, 1fr); gap: 4px; }
+      .stat-cell { padding: 8px 4px; }
+      .stat-val { font-size: 0.95rem; }
+
+      /* Ranked list */
+      .rank-list-entry { padding: 12px; gap: 10px; }
+      .rank-badge { font-size: 1.4rem; width: 30px; }
+      .rank-pts { font-size: 1.1rem; }
+
+      /* Modal - full screen on mobile */
+      .modal-overlay { align-items: stretch; }
+      .modal-sheet { 
+        max-height: 92vh; border-radius: 16px 16px 0 0;
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+      .modal-player-header { padding: 6px 14px 12px; gap: 10px; }
+      .modal-photo, .modal-photo-placeholder { width: 48px; height: 48px; }
+      .modal-name { font-size: 1.3rem; }
+      .modal-team-pos { font-size: 0.75rem; }
+      .modal-section { padding: 12px 14px; }
+      .modal-avg-grid { grid-template-columns: repeat(3, 1fr); gap: 5px; }
+      .modal-avg-cell { padding: 8px 4px; }
+      .modal-avg-val { font-size: 1rem; }
+      .modal-gamelog-row { padding: 8px 0; gap: 6px; }
+      .modal-gl-date { font-size: 0.68rem; width: 42px; }
+      .modal-gl-opp { font-size: 0.72rem; width: 50px; }
+      .modal-gl-stats { font-size: 0.65rem; }
+      .modal-gl-fpts { font-size: 0.8rem; }
+      .modal-draft-bar { padding: 12px 14px; }
+      .modal-draft-bar .btn-hero { padding: 14px; font-size: 1.1rem; }
+
+      /* Winner card */
+      .winner-trophy { font-size: 2.8rem; }
+      .winner-title { font-size: 1.8rem; }
+
+      /* Settings in lobby */
+      .settings-row { padding: 12px 14px; flex-wrap: wrap; gap: 8px; }
+      .seg-control { min-width: 0; }
+      .seg-btn { padding: 8px 6px; font-size: 0.72rem; }
+      .roster-slots-control { gap: 4px; }
+      .slot-control .stepper-btn { width: 26px; height: 26px; font-size: 0.8rem; }
+      .slot-control .stepper-val { font-size: 0.88rem; min-width: 18px; }
+      .slot-control { gap: 3px; }
+      .slot-league { font-size: 0.75rem; }
+    }
+
+    /* Even smaller screens (SE, older phones) */
+    @media (max-width: 380px) {
+      .hero h1 { font-size: 2.2rem; }
+      .lobby-code-display { font-size: 2rem; letter-spacing: 6px; }
+      .mp-score { font-size: 2.2rem; }
+      .matchup-vs { width: 32px; font-size: 1rem; }
+      .pc-avgs { display: none; }
+      .roster-mini { width: 130px; }
+      .filter-chip { padding: 7px 8px; font-size: 0.65rem; }
+      .stat-grid { grid-template-columns: repeat(3, 1fr); }
+      .modal-avg-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+
+    <!-- HOME -->
+    <div class="screen active" id="homeScreen">
+      <div id="activeGameBanner" style="display:none;"></div>
+      <div class="hero">
+        <div class="hero-badge">Season Live</div>
+        <h1>DRAFT <span class="accent">ROYALE</span></h1>
+        <div class="hero-sub">Draft players. Talk trash. Win the night.</div>
+        <div class="hero-icons">🏀🏒⚔️</div>
+      </div>
+
+      <div class="home-card">
+        <div class="home-card-title">Get in the Game</div>
+        <input class="input" id="playerName" placeholder="Enter your name" maxlength="20" autocomplete="off">
+        <div style="height: 12px;"></div>
+        <button class="btn btn-hero" onclick="createLobby()">CREATE GAME</button>
+        <div class="or-divider">or join a room</div>
+        <input class="input" id="joinCode" placeholder="Room code" maxlength="6"
+               style="text-transform:uppercase;font-family:'JetBrains Mono',monospace;letter-spacing:8px;text-align:center;margin-bottom:10px;font-size:1.2rem;">
+        <button class="btn btn-glass" onclick="joinLobby()">Join Game</button>
+        <div style="height: 10px;"></div>
+        <button class="btn btn-glass" onclick="findPublicGame()">🔍 Find Public Game</button>
+      </div>
+
+      <div class="games-section">
+        <div class="section-label">📅 Game Slate</div>
+        <div class="date-picker-row" id="datePickerRow"></div>
+        <div class="games-scroll" id="todaysGames">
+          <div style="color:var(--text-dim);font-size:0.85rem;padding:10px;">Loading games...</div>
+        </div>
+      </div>
+
+      <div class="scoring-panel">
+        <button class="scoring-toggle" onclick="toggleScoring(this)">
+          Scoring System <span class="arrow">▼</span>
+        </button>
+        <div class="scoring-body" id="scoringBody">
+          <div class="scoring-cols">
+            <div>
+              <div class="score-col-title nba">🏀 NBA</div>
+              <div class="score-line"><span>Point</span><span class="val">1</span></div>
+              <div class="score-line"><span>Rebound</span><span class="val">1.5</span></div>
+              <div class="score-line"><span>Assist</span><span class="val">2</span></div>
+              <div class="score-line"><span>Steal</span><span class="val">3</span></div>
+              <div class="score-line"><span>Block</span><span class="val">3</span></div>
+              <div class="score-line"><span>Double-Double</span><span class="val">+5</span></div>
+              <div class="score-line"><span>Triple-Double</span><span class="val">+10</span></div>
+            </div>
+            <div>
+              <div class="score-col-title nhl">🏒 NHL</div>
+              <div class="score-line"><span>Goal</span><span class="val">5</span></div>
+              <div class="score-line"><span>Assist</span><span class="val">3</span></div>
+              <div class="score-line"><span>Shot on Goal</span><span class="val">1</span></div>
+              <div class="score-line"><span>Blocked Shot</span><span class="val">2</span></div>
+              <div class="score-line"><span>Save (G)</span><span class="val">0.5</span></div>
+              <div class="score-line"><span>Shutout (G)</span><span class="val">+5</span></div>
+              <div class="score-line"><span>Hat Trick</span><span class="val">+3</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LOBBY -->
+    <div class="screen" id="lobbyScreen">
+      <div class="lobby-top">
+        <div class="lobby-top-label">Room Code</div>
+        <div class="lobby-code-display" id="lobbyCode">------</div>
+        <div class="lobby-code-actions">
+          <button class="copy-btn" onclick="copyLobbyCode()">📋 Copy Code</button>
+          <button class="copy-btn" onclick="shareLobby()">🔗 Share Link</button>
+        </div>
+      </div>
+      <div class="lobby-players-section">
+        <div class="section-label">👥 Players</div>
+        <div id="playerSlots"></div>
+      </div>
+      <div class="lobby-controls" id="hostControls" style="display:none;">
+
+        <div class="settings-section-title">Draft Settings</div>
+
+        <div class="settings-row">
+          <div><label>Game Day</label><div class="settings-desc">Which day's games to draft</div></div>
+          <div class="seg-control" id="gameDateControl"></div>
+        </div>
+
+        <div class="settings-row">
+          <div><label>Leagues</label><div class="settings-desc">Which players to draft from</div></div>
+          <div class="seg-control" id="leagueControl">
+            <button class="seg-btn" onclick="setLeague('nba',this)">🏀 NBA</button>
+            <button class="seg-btn seg-active-both" onclick="setLeague('both',this)">Both</button>
+            <button class="seg-btn" onclick="setLeague('nhl',this)">🏒 NHL</button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div><label>Draft Type</label><div class="settings-desc">How pick order works</div></div>
+          <div class="seg-control" id="draftTypeControl">
+            <button class="seg-btn seg-active" onclick="setDraftType('snake',this)">🐍 Snake</button>
+            <button class="seg-btn" onclick="setDraftType('linear',this)">↓ Linear</button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div><label>Time Per Pick</label></div>
+          <div class="stepper">
+            <button class="stepper-btn" onclick="adjustTime(-5)">−</button>
+            <div><span class="stepper-val" id="timeVal">30</span><span class="stepper-unit">sec</span></div>
+            <button class="stepper-btn" onclick="adjustTime(5)">+</button>
+          </div>
+        </div>
+
+        <div class="settings-row" id="rosterRow">
+          <div><label>Roster</label><div class="settings-desc">Picks per league</div></div>
+          <div id="rosterControls" class="roster-slots-control">
+            <div class="slot-control">
+              <span class="slot-league nba-slot">🏀</span>
+              <button class="stepper-btn" onclick="adjustSlot('nba',-1)">−</button>
+              <span class="stepper-val" id="nbaSlotsVal">4</span>
+              <button class="stepper-btn" onclick="adjustSlot('nba',1)">+</button>
+            </div>
+            <div class="slot-divider">+</div>
+            <div class="slot-control">
+              <span class="slot-league nhl-slot">🏒</span>
+              <button class="stepper-btn" onclick="adjustSlot('nhl',-1)">−</button>
+              <span class="stepper-val" id="nhlSlotsVal">2</span>
+              <button class="stepper-btn" onclick="adjustSlot('nhl',1)">+</button>
+            </div>
+            <div class="slot-divider">=</div>
+            <span class="stepper-val slot-total" id="totalSlotsVal">6</span>
+          </div>
+        </div>
+
+        <div class="settings-section-title">Room</div>
+
+        <div class="settings-row">
+          <div><label>Max Players</label></div>
+          <div class="stepper">
+            <button class="stepper-btn" onclick="adjustMaxPlayers(-1)">−</button>
+            <span class="stepper-val" id="maxPlayersVal">2</span>
+            <button class="stepper-btn" onclick="adjustMaxPlayers(1)">+</button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <label>Public Lobby</label>
+          <div class="toggle-switch" id="publicToggle" onclick="togglePublic()"></div>
+        </div>
+
+        <div class="settings-summary" id="settingsSummary"></div>
+        <div style="height:8px;"></div>
+        <button class="btn btn-hero" onclick="startDraft()">⚔️ START DRAFT</button>
+      </div>
+      <div id="waitingMsg" style="display:none;">
+        <div style="text-align:center;color:var(--text-dim);margin-top:28px;font-weight:500;margin-bottom:12px;">
+          Waiting for host to start...
+        </div>
+        <div class="settings-summary" id="guestSettingsSummary"></div>
+      </div>
+      <div style="height:16px;"></div>
+      <button class="btn btn-glass" onclick="leaveLobby()" style="width:100%;color:var(--text-dim);font-size:0.85rem;">Leave Lobby</button>
+    </div>
+
+    <!-- DRAFT -->
+    <div class="screen" id="draftScreen">
+      <div class="draft-bar">
+        <div class="draft-turn-info">
+          <div class="draft-turn-label">Now Picking</div>
+          <div class="draft-turn-name" id="draftTurnName">---</div>
+        </div>
+        <div class="draft-round-pill" id="draftRoundPill">R1 P1</div>
+        <div class="draft-clock" id="draftClock">
+          <div class="draft-clock-num" id="draftTimerNum">30</div>
+          <div class="draft-clock-label">sec</div>
+        </div>
+      </div>
+      <div class="roster-strip" id="draftRosters"></div>
+      <div id="waitingBanner" class="waiting-banner" style="display:none;">⏳ Waiting for pick...</div>
+      <div id="draftPool">
+        <div class="pool-header">
+          <div class="search-row">
+            <input class="search-input" id="playerSearch" placeholder="Search player or team..." oninput="filterPlayers()">
+          </div>
+          <div class="filter-row">
+            <button class="filter-chip active" data-filter="all" onclick="setFilter('all',this)">All</button>
+            <button class="filter-chip" data-filter="nba" onclick="setFilter('nba',this)">🏀 NBA</button>
+            <button class="filter-chip" data-filter="nhl" onclick="setFilter('nhl',this)">🏒 NHL</button>
+          </div>
+          <div class="filter-row" id="positionFilters">
+            <button class="filter-chip active-pos" data-pos="all" onclick="setPosFilter('all',this)">All Pos</button>
+          </div>
+        </div>
+        <div class="slot-indicator-row" id="slotIndicator"></div>
+        <div class="player-pool-grid" id="playerPool"></div>
+      </div>
+      <div class="draft-log" id="draftLog"></div>
+    </div>
+
+    <!-- Player Detail Modal -->
+    <div class="modal-overlay" id="playerModal" onclick="if(event.target===this)closeModal()">
+      <div class="modal-sheet" id="modalSheet">
+        <div class="modal-handle" onclick="closeModal()"></div>
+        <button class="modal-close-btn" onclick="closeModal()" aria-label="Close">✕</button>
+        <div class="modal-player-header" id="modalHeader"></div>
+        <div class="modal-section" id="modalAvgs">
+          <div class="modal-section-title">Season Averages</div>
+          <div class="modal-avg-grid" id="modalAvgGrid"></div>
+        </div>
+        <div class="modal-section" id="modalGameLog">
+          <div class="modal-section-title">Last 3 Games</div>
+          <div id="modalGameLogBody"><div class="modal-loading">Loading game log...</div></div>
+        </div>
+        <div class="modal-draft-bar" id="modalDraftBar"></div>
+      </div>
+    </div>
+
+    <!-- DRAFT RECAP -->
+    <div class="screen" id="recapScreen">
+      <div class="recap-header">
+        <div class="recap-title">Draft Complete ✅</div>
+        <div class="recap-subtitle">Here's how it went down</div>
+      </div>
+      <div id="recapBody" class="recap-body"></div>
+      <div class="recap-footer">
+        <button class="btn btn-hero" onclick="goToLive()">🔴 Go Live</button>
+      </div>
+    </div>
+
+    <!-- LIVE -->
+    <div class="screen" id="liveScreen">
+      <div class="live-pip-bar" id="liveBar">
+        <div class="live-pip"></div>
+        <div class="live-pip-label">Live</div>
+      </div>
+
+      <div id="winnerBanner" style="display:none;">
+        <div class="winner-card">
+          <div class="winner-trophy">🏆</div>
+          <div class="winner-title" id="winnerName">Winner!</div>
+          <div class="winner-subtitle" id="winnerScore"></div>
+        </div>
+      </div>
+
+      <!-- Head-to-head matchup (2 players) -->
+      <div id="matchupView" style="display:none;">
+        <div class="matchup-header">
+          <div class="matchup-scores">
+            <div class="matchup-player" id="mp-left"></div>
+            <div class="matchup-vs">VS</div>
+            <div class="matchup-player" id="mp-right"></div>
+          </div>
+          <div class="matchup-diff" id="matchupDiff"></div>
+        </div>
+
+        <div id="matchupRosters"></div>
+      </div>
+
+      <!-- 3+ players ranked list -->
+      <div id="rankListView" style="display:none;"></div>
+
+      <div style="height:12px;"></div>
+      <button class="btn btn-glass" onclick="goHome()" style="width:100%;">← Back to Home</button>
+      <div style="height:8px;"></div>
+      <button class="btn btn-glass" onclick="leaveGame()" style="width:100%;color:var(--red);border-color:rgba(255,61,90,0.2);font-size:0.85rem;">Leave Game Permanently</button>
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let myName = '', myLobbyId = null, mySocketId = null, mySessionId = null, isHost = false;
+    let currentFilter = 'all', currentPosFilter = 'all', availablePlayers = [], draftTimerInterval = null;
+    let lobbyState = null, amIDrafting = false, draftOrderList = [];
+
+    // Session management - persists across refreshes AND tab closes
+    function getSessionId() {
+      // Use localStorage so session survives tab close/reopen
+      let sid = localStorage.getItem('dr_sessionId');
+      if (!sid) {
+        sid = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
+        localStorage.setItem('dr_sessionId', sid);
+      }
+      return sid;
+    }
+    mySessionId = getSessionId();
+
+    // Active game state persistence
+    function saveActiveGame(lobbyId, phase, playerName) {
+      localStorage.setItem('dr_activeGame', JSON.stringify({
+        lobbyId, phase, playerName, sessionId: mySessionId, savedAt: Date.now()
+      }));
+    }
+    function getActiveGame() {
+      try {
+        const data = JSON.parse(localStorage.getItem('dr_activeGame'));
+        if (!data) return null;
+        // Expire after 5 hours (games don't last longer)
+        if (Date.now() - data.savedAt > 5 * 60 * 60 * 1000) {
+          clearActiveGame();
+          return null;
+        }
+        return data;
+      } catch { return null; }
+    }
+    function clearActiveGame() {
+      localStorage.removeItem('dr_activeGame');
+    }
+    function updateActiveGamePhase(phase) {
+      const ag = getActiveGame();
+      if (ag) { ag.phase = phase; ag.savedAt = Date.now(); localStorage.setItem('dr_activeGame', JSON.stringify(ag)); }
+    }
+
+    // Check for active game and show banner on home screen
+    function renderActiveGameBanner() {
+      const banner = document.getElementById('activeGameBanner');
+      const ag = getActiveGame();
+      if (!ag) { banner.style.display = 'none'; return; }
+      const phaseLabel = ag.phase === 'waiting' ? '⏳ In Lobby' :
+                         ag.phase === 'drafting' ? '⚔️ Drafting' :
+                         ag.phase === 'live' ? '🔴 Live' :
+                         ag.phase === 'finished' ? '✅ Finished' : '🎮 Active';
+      banner.style.display = 'flex';
+      banner.innerHTML = `
+        <div class="active-game-banner" onclick="rejoinActiveGame()">
+          <div class="agb-pip"></div>
+          <div class="agb-info">
+            <div class="agb-title">${phaseLabel} — Room ${ag.lobbyId}</div>
+            <div class="agb-sub">Playing as ${ag.playerName}</div>
+          </div>
+          <button class="agb-btn" onclick="event.stopPropagation(); rejoinActiveGame()">REJOIN</button>
+          <button class="agb-leave" onclick="event.stopPropagation(); abandonGame()">✕</button>
+        </div>`;
+    }
+
+    function rejoinActiveGame() {
+      const ag = getActiveGame();
+      if (!ag) return;
+      // Make sure we're using the right session
+      mySessionId = ag.sessionId;
+      localStorage.setItem('dr_sessionId', mySessionId);
+      socket.emit('rejoin', { sessionId: mySessionId });
+    }
+
+    function abandonGame() {
+      if (!confirm('Leave this game? You won\'t be able to rejoin.')) return;
+      clearActiveGame();
+      // Generate a fresh session so the server won't associate us anymore
+      mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
+      localStorage.setItem('dr_sessionId', mySessionId);
+      myLobbyId = null; isHost = false;
+      renderActiveGameBanner();
+      showToast('Left the game');
+    }
+
+    socket.on('connect', () => {
+      mySocketId = socket.id;
+      // Check for join code in URL
+      const params = new URLSearchParams(window.location.search);
+      const joinCode = params.get('join');
+      if (joinCode) {
+        document.getElementById('joinCode').value = joinCode.toUpperCase();
+        window.history.replaceState({}, '', window.location.pathname);
+        // Fresh session so rejoin won't hijack us into an old game
+        clearActiveGame();
+        mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
+        localStorage.setItem('dr_sessionId', mySessionId);
+        renderActiveGameBanner();
+        return; // skip rejoin, user will manually click join
+      }
+      // Attempt rejoin if we have an active game
+      const ag = getActiveGame();
+      if (ag && mySessionId) {
+        socket.emit('rejoin', { sessionId: mySessionId });
+      }
+      renderActiveGameBanner();
     });
-  } catch (err) {
-    console.error('Error fetching NBA games:', err);
-    return [];
-  }
-}
 
-async function fetchNHLGames(targetDate) {
-  try {
-    const d = targetDate ? new Date(targetDate) : new Date();
-    const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const response = await fetch(`https://api-web.nhle.com/v1/schedule/${dateStr}`);
-    if (!response.ok) {
-      console.error(`NHL schedule API returned ${response.status} for ${dateStr}`);
-      return [];
-    }
-    const data = await response.json();
-    
-    const games = [];
-    for (const day of data.gameWeek || []) {
-      if (day.date === dateStr) {
-        for (const game of day.games || []) {
-          games.push({
-            gameId: String(game.id),
-            league: 'nhl',
-            homeTeam: game.homeTeam?.abbrev,
-            awayTeam: game.awayTeam?.abbrev,
-            homeName: game.homeTeam?.placeName?.default + ' ' + (game.homeTeam?.commonName?.default || ''),
-            awayName: game.awayTeam?.placeName?.default + ' ' + (game.awayTeam?.commonName?.default || ''),
-            startTime: new Date(game.startTimeUTC),
-            state: game.gameState,
-            status: game.gameState === 'LIVE' ? 'In Progress' : game.gameState
-          });
-        }
-      }
-    }
-    return games;
-  } catch (err) {
-    console.error('Error fetching NHL games:', err);
-    return [];
-  }
-}
+    socket.on('rejoinState', (data) => {
+      mySessionId = data.sessionId;
+      isHost = data.isHost;
+      lobbyState = data.lobby;
+      myLobbyId = data.lobby.id;
+      myName = data.lobby.players.find(p => p.id === mySessionId)?.name || myName;
 
-async function fetchNBAPlayersForGames(games) {
-  const players = [];
-  
-  for (const game of games) {
-    // Build list of teams in this game
-    const teams = [
-      { id: game.homeTeamId, abbrev: game.homeTeam, name: game.homeName },
-      { id: game.awayTeamId, abbrev: game.awayTeam, name: game.awayName }
-    ];
-    
-    let gotPlayers = false;
-    
-    // Primary approach: fetch team rosters via ESPN team roster endpoint
-    // This works reliably for pre-game, in-progress, and completed games
-    for (const team of teams) {
-      if (!team.id) continue;
-      try {
-        const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${team.id}/roster`);
-        const data = await response.json();
-        
-        for (const athlete of data.athletes || []) {
-          if (athlete.displayName) {
-            players.push({
-              id: `nba-${athlete.id}`,
-              athleteId: athlete.id,
-              name: athlete.displayName,
-              team: team.abbrev,
-              teamName: team.name,
-              league: 'nba',
-              position: athlete.position?.abbreviation || 'N/A',
-              gameId: game.gameId,
-              headshot: athlete.headshot?.href || null,
-              stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
-              fantasyScore: 0,
-              seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
-              projectedScore: 0
-            });
-            gotPlayers = true;
+      // Persist active game state
+      saveActiveGame(myLobbyId, data.phase, myName);
+
+      if (data.phase === 'waiting') {
+        showScreen('lobbyScreen');
+        document.getElementById('lobbyCode').textContent = data.lobby.id;
+        if (isHost) {
+          document.getElementById('hostControls').style.display = 'block';
+          document.getElementById('waitingMsg').style.display = 'none';
+          if (data.lobby.settings) {
+            lobbySettings = { ...lobbySettings, ...data.lobby.settings, maxPlayers: data.lobby.maxPlayers, isPublic: data.lobby.isPublic };
+            document.getElementById('timeVal').textContent = lobbySettings.timePerPick;
+            document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
+            updateRosterUI();
+            buildLobbyDatePicker();
           }
-        }
-      } catch (teamErr) {
-        console.error(`Error fetching NBA roster for team ${team.abbrev} (${team.id}):`, teamErr.message);
-      }
-    }
-    
-    // Fallback: if team roster endpoint didn't work, try summary endpoint
-    // (works for in-progress/completed games that have rosters populated)
-    if (!gotPlayers) {
-      try {
-        const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${game.gameId}`);
-        const data = await response.json();
-        
-        for (const roster of data.rosters || []) {
-          const teamAbbrev = roster.team?.abbreviation;
-          const teamName = roster.team?.displayName;
-          
-          for (const entry of roster.roster || []) {
-            const athlete = entry.athlete || entry;
-            if (athlete.displayName) {
-              players.push({
-                id: `nba-${athlete.id}`,
-                athleteId: athlete.id,
-                name: athlete.displayName,
-                team: teamAbbrev,
-                teamName: teamName,
-                league: 'nba',
-                position: athlete.position?.abbreviation || 'N/A',
-                gameId: game.gameId,
-                headshot: athlete.headshot?.href || null,
-                stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
-                fantasyScore: 0,
-                seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
-                projectedScore: 0
-              });
-            }
-          }
-        }
-      } catch (err) {
-        console.error(`Error fetching NBA summary fallback for game ${game.gameId}:`, err);
-      }
-    }
-  }
-  
-  return players;
-}
-
-async function fetchNHLPlayersForGames(games) {
-  const players = [];
-  
-  for (const game of games) {
-    try {
-      // Use team roster endpoints instead of gamecenter (which doesn't have a roster path)
-      // Fetch rosters for both teams in the game
-      const teams = [
-        { abbrev: game.homeTeam, name: game.homeName },
-        { abbrev: game.awayTeam, name: game.awayName }
-      ];
-      
-      for (const team of teams) {
-        try {
-          const response = await fetch(`https://api-web.nhle.com/v1/roster/${team.abbrev}/current`);
-          if (!response.ok) {
-            console.error(`NHL roster API returned ${response.status} for ${team.abbrev}`);
-            continue;
-          }
-          const data = await response.json();
-          
-          for (const posGroup of ['forwards', 'defensemen', 'goalies']) {
-            for (const player of (data[posGroup] || [])) {
-              const position = posGroup === 'forwards' ? player.positionCode || 'F' :
-                              posGroup === 'defensemen' ? 'D' : 'G';
-              const isGoalie = posGroup === 'goalies';
-              
-              players.push({
-                id: `nhl-${player.id}`,
-                athleteId: player.id,
-                name: `${player.firstName?.default || ''} ${player.lastName?.default || ''}`.trim(),
-                team: team.abbrev,
-                teamName: team.name?.trim(),
-                league: 'nhl',
-                position: position,
-                gameId: game.gameId,
-                headshot: player.headshot || null,
-                stats: isGoalie ? 
-                  { saves: 0, goalsAgainst: 0 } :
-                  { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
-                fantasyScore: 0,
-                isGoalie: isGoalie,
-                seasonAvg: isGoalie ? { saves: 0, goalsAgainst: 0 } : { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
-                projectedScore: 0
-              });
-            }
-          }
-        } catch (teamErr) {
-          console.error(`Error fetching roster for ${team.abbrev}:`, teamErr.message);
-        }
-      }
-    } catch (err) {
-      console.error(`Error fetching NHL players for game ${game.gameId}:`, err);
-    }
-  }
-  
-  return players;
-}
-
-// Fetch season averages for NBA players in bulk (one call per athlete)
-async function enrichNBAPlayerAverages(players) {
-  // Use ESPN athlete endpoint for season stats
-  const enrichPromises = players.filter(p => p.league === 'nba').map(async (player) => {
-    try {
-      const res = await fetch(`https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${player.athleteId}/stats`);
-      const data = await res.json();
-      
-      // Look for current season splits/averages
-      const categories = data.categories || [];
-      for (const cat of categories) {
-        if (cat.type === 'perGame' || cat.name === 'perGame') {
-          const labels = cat.labels || cat.names || [];
-          const vals = cat.stats || cat.values || cat.totals || [];
-          const idx = (name) => labels.indexOf(name);
-          player.seasonAvg = {
-            points: parseFloat(vals[idx('PTS')]) || parseFloat(vals[idx('avgPoints')]) || 0,
-            rebounds: parseFloat(vals[idx('REB')]) || parseFloat(vals[idx('avgRebounds')]) || 0,
-            assists: parseFloat(vals[idx('AST')]) || parseFloat(vals[idx('avgAssists')]) || 0,
-            steals: parseFloat(vals[idx('STL')]) || parseFloat(vals[idx('avgSteals')]) || 0,
-            blocks: parseFloat(vals[idx('BLK')]) || parseFloat(vals[idx('avgBlocks')]) || 0
-          };
-          break;
-        }
-      }
-      
-      // Fallback: check splits
-      const splits = data.splits || {};
-      const perGame = splits.categories?.find(c => c.name === 'general' || c.type === 'perGame');
-      if (perGame && player.seasonAvg.points === 0) {
-        const stats = perGame.stats || [];
-        for (const s of stats) {
-          if (s.name === 'avgPoints' || s.abbreviation === 'PTS') player.seasonAvg.points = parseFloat(s.value) || 0;
-          if (s.name === 'avgRebounds' || s.abbreviation === 'REB') player.seasonAvg.rebounds = parseFloat(s.value) || 0;
-          if (s.name === 'avgAssists' || s.abbreviation === 'AST') player.seasonAvg.assists = parseFloat(s.value) || 0;
-          if (s.name === 'avgSteals' || s.abbreviation === 'STL') player.seasonAvg.steals = parseFloat(s.value) || 0;
-          if (s.name === 'avgBlocks' || s.abbreviation === 'BLK') player.seasonAvg.blocks = parseFloat(s.value) || 0;
-        }
-      }
-      
-      // Recalculate projection
-      const a = player.seasonAvg;
-      player.projectedScore = Math.round(((a.points * SCORING.nba.points) + (a.rebounds * SCORING.nba.rebounds) +
-        (a.assists * SCORING.nba.assists) + (a.steals * SCORING.nba.steals) + (a.blocks * SCORING.nba.blocks)) * 10) / 10;
-    } catch (e) {
-      // Silently fail - player keeps default 0 projections
-    }
-  });
-  
-  // Run in batches of 10 to not hammer API
-  for (let i = 0; i < enrichPromises.length; i += 10) {
-    await Promise.all(enrichPromises.slice(i, i + 10));
-  }
-}
-
-// Fetch NHL player season stats
-async function enrichNHLPlayerAverages(players) {
-  const nhlPlayers = players.filter(p => p.league === 'nhl');
-  
-  const enrichPromises = nhlPlayers.map(async (player) => {
-    try {
-      const res = await fetch(`https://api-web.nhle.com/v1/player/${player.athleteId}/landing`);
-      if (!res.ok) return; // skip if API returns error
-      const data = await res.json();
-      
-      // Get current season stats from featuredStats
-      const reg = data.featuredStats?.regularSeason?.subSeason;
-      if (reg) {
-        const gp = reg.gamesPlayed || 1;
-        if (player.isGoalie) {
-          player.seasonAvg = {
-            saves: Math.round((reg.saves || 0) / gp * 10) / 10,
-            goalsAgainst: Math.round((reg.goalsAgainst || 0) / gp * 10) / 10
-          };
-          player.projectedScore = Math.round(((player.seasonAvg.saves * SCORING.nhl.saves)) * 10) / 10;
+          updateSettingsSummary();
         } else {
-          player.seasonAvg = {
-            goals: Math.round((reg.goals || 0) / gp * 10) / 10,
-            assists: Math.round((reg.assists || 0) / gp * 10) / 10,
-            shotsOnGoal: Math.round((reg.shots || 0) / gp * 10) / 10,
-            blockedShots: 0  // NHL API doesn't always include this in featured stats
-          };
-          const a = player.seasonAvg;
-          player.projectedScore = Math.round(((a.goals * SCORING.nhl.goals) + (a.assists * SCORING.nhl.assists) +
-            (a.shotsOnGoal * SCORING.nhl.shotsOnGoal)) * 10) / 10;
+          document.getElementById('hostControls').style.display = 'none';
+          document.getElementById('waitingMsg').style.display = 'block';
         }
+        renderLobbyPlayers(data.lobby);
+        showToast('Reconnected to lobby!');
+      } else if (data.phase === 'drafting') {
+        showScreen('draftScreen');
+        availablePlayers = data.availablePlayers;
+        draftOrderList = data.draftOrder;
+        amIDrafting = data.currentDrafter === mySessionId;
+        buildPositionFilters(data.availablePlayers);
+        renderDraftRosters(data.lobby.players, data.currentDrafter);
+        updateDraftUI(data.currentPick, data.currentDrafter, data.timePerPick);
+        renderPlayerPool();
+        showToast('Reconnected to draft!');
+      } else if (data.phase === 'live' || data.phase === 'finished') {
+        showScreen('liveScreen');
+        renderLive(data.players, data.phase);
+        if (data.phase === 'finished') {
+          const bar = document.getElementById('liveBar');
+          bar.classList.add('finished');
+          bar.querySelector('.live-pip-label').textContent = 'Final';
+          const sorted = [...data.players].sort((a, b) => b.totalScore - a.totalScore);
+          if (sorted.length) {
+            document.getElementById('winnerBanner').style.display = 'block';
+            document.getElementById('winnerName').textContent = `${sorted[0].name} Wins!`;
+            document.getElementById('winnerScore').textContent = `${sorted[0].totalScore} fantasy points`;
+          }
+        }
+        showToast('Reconnected to game!');
       }
-    } catch (e) {
-      // Silently fail
-    }
-  });
-  
-  for (let i = 0; i < enrichPromises.length; i += 10) {
-    await Promise.all(enrichPromises.slice(i, i + 10));
-  }
-}
-
-// Assign tier badges based on projected fantasy score
-function assignTierBadges(players) {
-  // Separate by league for fair comparison
-  const nbaPlayers = players.filter(p => p.league === 'nba');
-  const nhlPlayers = players.filter(p => p.league === 'nhl');
-  
-  function assignTiers(list) {
-    const sorted = [...list].sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
-    const total = sorted.length;
-    sorted.forEach((p, i) => {
-      const pct = i / total;
-      if (pct < 0.1) { p.tier = 'star'; p.tierLabel = '⭐ Star'; }
-      else if (pct < 0.3) { p.tier = 'starter'; p.tierLabel = '🟢 Starter'; }
-      else if (pct < 0.6) { p.tier = 'solid'; p.tierLabel = '🔵 Solid'; }
-      else { p.tier = 'bench'; p.tierLabel = '⚪ Bench'; }
-      // Copy tier back to original player object
-      const orig = list.find(op => op.id === p.id);
-      if (orig) { orig.tier = p.tier; orig.tierLabel = p.tierLabel; }
     });
-  }
-  
-  assignTiers(nbaPlayers);
-  assignTiers(nhlPlayers);
-}
 
-// Fetch last 3 game log for a player (called on-demand via API)
-async function fetchNBAGameLog(athleteId) {
-  try {
-    const res = await fetch(`https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/gamelog`);
-    const data = await res.json();
-    
-    const games = [];
-    const events = data.events || {};
-    const categories = data.categories || [];
-    
-    // Find the stats category
-    let labels = [];
-    let statsByEvent = {};
-    for (const cat of categories) {
-      if (cat.type === 'event' || cat.name === 'event') {
-        labels = cat.labels || [];
-        for (const evt of cat.events || []) {
-          statsByEvent[evt.eventId] = evt.stats || [];
-        }
+    socket.on('rejoinFailed', () => {
+      // No active session on server — clear stale local data
+      clearActiveGame();
+      renderActiveGameBanner();
+    });
+
+    socket.on('playerReconnected', ({ playerName }) => {
+      showToast(`${playerName} reconnected`);
+    });
+
+    function showScreen(id) {
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+      window.scrollTo(0, 0);
+    }
+    function goHome() {
+      showScreen('homeScreen');
+      // Don't destroy the session — just navigate back so user can rejoin
+      renderActiveGameBanner();
+    }
+    function leaveGame() {
+      if (!confirm('Leave this game permanently? You won\'t be able to rejoin.')) return;
+      clearActiveGame();
+      // Generate fresh sessionId so server won't reconnect us
+      mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
+      localStorage.setItem('dr_sessionId', mySessionId);
+      myLobbyId = null; isHost = false;
+      showScreen('homeScreen');
+      renderActiveGameBanner();
+      showToast('Left the game');
+    }
+
+    function showToast(msg, isError) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'toast visible' + (isError ? ' error' : '');
+      setTimeout(() => t.classList.remove('visible'), 3000);
+    }
+
+    function toggleScoring(btn) {
+      btn.classList.toggle('open');
+      document.getElementById('scoringBody').classList.toggle('open');
+    }
+
+    async function loadGamesForDate(dateStr) {
+      try {
+        const url = dateStr ? `/api/games?date=${dateStr}` : '/api/games';
+        const res = await fetch(url);
+        const games = await res.json();
+        const c = document.getElementById('todaysGames');
+        if (!games.length) { c.innerHTML = '<div style="color:var(--text-dim);font-size:0.85rem;padding:10px;">No games scheduled</div>'; return; }
+        c.innerHTML = games.map(g => {
+          const time = new Date(g.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+          const isLive = g.state === 'in' || g.state === 'LIVE';
+          const isFinal = g.state === 'post' || g.state === 'OFF' || g.state === 'FINAL';
+          const isUpcoming = g.state === 'pre' || g.state === 'FUT';
+          const statusText = isLive ? '● LIVE' : isFinal ? 'FINAL' : time;
+          const statusClass = isLive ? 'game-tile-live' : isFinal ? 'game-tile-final' : '';
+          const draftable = !isFinal ? '<div class="game-tile-draftable">✓ Draftable</div>' : '';
+          return `<div class="game-tile ${isFinal ? 'game-tile-started' : ''}">
+            <div class="game-tile-league ${g.league}">${g.league}</div>
+            <div class="game-tile-teams">${g.awayTeam} @ ${g.homeTeam}</div>
+            <div class="game-tile-time ${statusClass}">${statusText}</div>
+            ${draftable}
+          </div>`;
+        }).join('');
+      } catch(e) { console.error(e); }
+    }
+
+    // Init home screen
+    buildHomeDatePicker();
+    loadGamesForDate(null);
+    renderActiveGameBanner();
+    // Restore player name from previous session
+    const savedName = localStorage.getItem('dr_playerName');
+    if (savedName) document.getElementById('playerName').value = savedName;
+
+    // Lobby settings state
+    let lobbySettings = {
+      draftType: 'snake',
+      timePerPick: 30,
+      rosterSlots: { nba: 4, nhl: 2 },
+      leagues: 'both',
+      maxPlayers: 2,
+      isPublic: false,
+      gameDate: null // null = today
+    };
+
+    // Date helpers
+    function getDateOptions() {
+      const options = [];
+      for (let i = 0; i < 4; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() + i);
+        const iso = d.toISOString().split('T')[0];
+        let label;
+        if (i === 0) label = 'Today';
+        else if (i === 1) label = 'Tomorrow';
+        else label = d.toLocaleDateString('en-US', { weekday: 'short' });
+        const dateNum = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        options.push({ iso, label, dateNum, dayLabel: label });
+      }
+      return options;
+    }
+
+    let selectedHomeDate = null; // null = today
+
+    function buildHomeDatePicker() {
+      const opts = getDateOptions();
+      const row = document.getElementById('datePickerRow');
+      row.innerHTML = opts.map((o, i) => `
+        <button class="date-chip ${i === 0 ? 'date-active' : ''}" data-date="${o.iso}" onclick="selectHomeDate('${o.iso}', this)">
+          <span class="date-day">${o.dayLabel}</span>
+          ${o.dateNum}
+        </button>
+      `).join('');
+    }
+
+    function selectHomeDate(iso, btn) {
+      selectedHomeDate = iso;
+      document.querySelectorAll('.date-chip').forEach(b => b.classList.remove('date-active'));
+      btn.classList.add('date-active');
+      loadGamesForDate(iso);
+    }
+
+    function buildLobbyDatePicker() {
+      const opts = getDateOptions();
+      const c = document.getElementById('gameDateControl');
+      const currentDate = lobbySettings.gameDate || opts[0].iso;
+      c.innerHTML = opts.map(o => `
+        <button class="seg-btn ${o.iso === currentDate ? 'seg-active' : ''}" onclick="setGameDate('${o.iso}', this)">${o.label}</button>
+      `).join('');
+    }
+
+    function setGameDate(iso, btn) {
+      lobbySettings.gameDate = iso;
+      document.querySelectorAll('#gameDateControl .seg-btn').forEach(b => b.className = 'seg-btn');
+      btn.classList.add('seg-active');
+      emitSettings();
+    }
+
+    function getTotalSlots() {
+      const s = lobbySettings;
+      if (s.leagues === 'nba') return s.rosterSlots.nba;
+      if (s.leagues === 'nhl') return s.rosterSlots.nhl;
+      return s.rosterSlots.nba + s.rosterSlots.nhl;
+    }
+
+    function setLeague(val, btn) {
+      lobbySettings.leagues = val;
+      document.querySelectorAll('#leagueControl .seg-btn').forEach(b => {
+        b.className = 'seg-btn';
+      });
+      if (val === 'nba') btn.classList.add('seg-active');
+      else if (val === 'nhl') btn.classList.add('seg-active-nhl');
+      else btn.classList.add('seg-active-both');
+      updateRosterUI();
+      emitSettings();
+    }
+
+    function setDraftType(val, btn) {
+      lobbySettings.draftType = val;
+      document.querySelectorAll('#draftTypeControl .seg-btn').forEach(b => b.className = 'seg-btn');
+      btn.classList.add('seg-active');
+      emitSettings();
+    }
+
+    function adjustTime(delta) {
+      lobbySettings.timePerPick = Math.min(120, Math.max(10, lobbySettings.timePerPick + delta));
+      document.getElementById('timeVal').textContent = lobbySettings.timePerPick;
+      emitSettings();
+    }
+
+    function adjustSlot(league, delta) {
+      const cur = lobbySettings.rosterSlots[league] || 0;
+      lobbySettings.rosterSlots[league] = Math.min(10, Math.max(1, cur + delta));
+      updateRosterUI();
+      emitSettings();
+    }
+
+    function updateRosterUI() {
+      const s = lobbySettings;
+      const lg = s.leagues;
+      const rosterRow = document.getElementById('rosterRow');
+      const controls = document.getElementById('rosterControls');
+
+      document.getElementById('nbaSlotsVal').textContent = s.rosterSlots.nba;
+      document.getElementById('nhlSlotsVal').textContent = s.rosterSlots.nhl;
+      document.getElementById('totalSlotsVal').textContent = getTotalSlots();
+
+      // Show/hide league slot controls based on league selection
+      const nbaEls = controls.querySelectorAll('.nba-slot, .slot-control:first-child');
+      const nhlEls = controls.querySelectorAll('.nhl-slot');
+      const nhlControl = controls.querySelectorAll('.slot-control')[1];
+      const dividers = controls.querySelectorAll('.slot-divider');
+      const totalEl = document.getElementById('totalSlotsVal');
+
+      if (lg === 'nba') {
+        // Only NBA: show single stepper
+        controls.querySelectorAll('.slot-control')[0].style.display = 'flex';
+        if (nhlControl) nhlControl.style.display = 'none';
+        dividers.forEach(d => d.style.display = 'none');
+        totalEl.style.display = 'none';
+      } else if (lg === 'nhl') {
+        // Only NHL: show single stepper
+        controls.querySelectorAll('.slot-control')[0].style.display = 'none';
+        if (nhlControl) nhlControl.style.display = 'flex';
+        dividers.forEach(d => d.style.display = 'none');
+        totalEl.style.display = 'none';
+      } else {
+        // Both: show both with + = total
+        controls.querySelectorAll('.slot-control')[0].style.display = 'flex';
+        if (nhlControl) nhlControl.style.display = 'flex';
+        dividers.forEach(d => d.style.display = 'block');
+        totalEl.style.display = 'inline';
       }
     }
-    
-    // Get last 3 events
-    const eventIds = Object.keys(events).slice(-5);
-    const last3 = eventIds.slice(-3).reverse();
-    
-    for (const evtId of last3) {
-      const evt = events[evtId];
-      const stats = statsByEvent[evtId] || [];
-      
-      const ptsIdx = labels.indexOf('PTS');
-      const rebIdx = labels.indexOf('REB');
-      const astIdx = labels.indexOf('AST');
-      const stlIdx = labels.indexOf('STL');
-      const blkIdx = labels.indexOf('BLK');
-      const minIdx = labels.indexOf('MIN');
-      
-      games.push({
-        date: evt?.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
-        opponent: evt?.opponent?.abbreviation || evt?.atVs + ' ' + (evt?.opponent?.abbreviation || '?'),
-        stats: {
-          points: parseInt(stats[ptsIdx]) || 0,
-          rebounds: parseInt(stats[rebIdx]) || 0,
-          assists: parseInt(stats[astIdx]) || 0,
-          steals: parseInt(stats[stlIdx]) || 0,
-          blocks: parseInt(stats[blkIdx]) || 0,
-          minutes: stats[minIdx] || '0'
+
+    function adjustMaxPlayers(delta) {
+      lobbySettings.maxPlayers = Math.min(8, Math.max(1, lobbySettings.maxPlayers + delta));
+      document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
+      emitSettings();
+    }
+
+    function togglePublic() {
+      lobbySettings.isPublic = !lobbySettings.isPublic;
+      document.getElementById('publicToggle').classList.toggle('on');
+      emitSettings();
+    }
+
+    function emitSettings() {
+      updateSettingsSummary();
+      socket.emit('updateSettings', { settings: {
+        ...lobbySettings,
+      }});
+    }
+
+    function updateSettingsSummary() {
+      const s = lobbySettings;
+      const total = getTotalSlots();
+      let rosterStr;
+      if (s.leagues === 'nba') rosterStr = `${s.rosterSlots.nba} NBA`;
+      else if (s.leagues === 'nhl') rosterStr = `${s.rosterSlots.nhl} NHL`;
+      else rosterStr = `${s.rosterSlots.nba}🏀 + ${s.rosterSlots.nhl}🏒 = ${total}`;
+      const draftStr = s.draftType === 'snake' ? 'Snake' : 'Linear';
+      const dateLabel = getDateLabel(s.gameDate);
+      document.getElementById('settingsSummary').textContent =
+        `${dateLabel} · ${rosterStr} · ${draftStr} · ${s.timePerPick}s/pick · ${s.maxPlayers} players`;
+    }
+
+    function getDateLabel(iso) {
+      if (!iso) return 'Today';
+      const d = new Date(iso + 'T12:00:00');
+      const today = new Date(); today.setHours(12,0,0,0);
+      const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+      if (d.toDateString() === today.toDateString()) return 'Today';
+      if (d.toDateString() === tomorrow.toDateString()) return 'Tomorrow';
+      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    function createLobby() {
+      myName = document.getElementById('playerName').value.trim();
+      if (!myName) return showToast('Enter your name!', true);
+      localStorage.setItem('dr_playerName', myName);
+      socket.emit('createLobby', {
+        playerName: myName,
+        maxPlayers: lobbySettings.maxPlayers,
+        isPublic: lobbySettings.isPublic,
+        sessionId: mySessionId,
+        settings: {
+          draftType: lobbySettings.draftType,
+          timePerPick: lobbySettings.timePerPick,
+          rosterSlots: lobbySettings.rosterSlots,
+          leagues: lobbySettings.leagues,
+          gameDate: lobbySettings.gameDate
         }
       });
     }
-    
-    return games;
-  } catch (e) {
-    console.error(`Error fetching NBA game log for ${athleteId}:`, e.message);
-    return [];
-  }
-}
-
-async function fetchNHLGameLog(playerId) {
-  try {
-    const res = await fetch(`https://api-web.nhle.com/v1/player/${playerId}/game-log/now`);
-    if (!res.ok) {
-      console.error(`NHL game log API returned ${res.status} for player ${playerId}`);
-      return [];
+    function joinLobby() {
+      myName = document.getElementById('playerName').value.trim();
+      const code = document.getElementById('joinCode').value.trim().toUpperCase();
+      if (!myName) return showToast('Enter your name!', true);
+      if (!code) return showToast('Enter a room code!', true);
+      localStorage.setItem('dr_playerName', myName);
+      socket.emit('joinLobby', { lobbyId: code, playerName: myName, sessionId: mySessionId });
     }
-    const data = await res.json();
-    
-    const gameLog = data.gameLog || [];
-    const last3 = gameLog.slice(0, 3); // NHL API returns most recent first
-    
-    return last3.map(g => ({
-      date: new Date(g.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      opponent: `${g.homeRoadFlag === 'H' ? 'vs' : '@'} ${g.opponentAbbrev || '?'}`,
-      stats: g.goals !== undefined ? {
-        goals: g.goals || 0,
-        assists: g.assists || 0,
-        points: g.points || 0,
-        shotsOnGoal: g.shots || 0,
-        plusMinus: g.plusMinus || 0,
-        toi: g.toi || '0:00'
-      } : {
-        // Goalie
-        saves: g.savePctg ? Math.round((g.shotsAgainst || 0) * (g.savePctg || 0)) : (g.saves || 0),
-        goalsAgainst: g.goalsAgainst || 0,
-        savePct: g.savePctg ? (g.savePctg * 100).toFixed(1) + '%' : '0%',
-        toi: g.toi || '0:00'
-      }
-    }));
-  } catch (e) {
-    console.error(`Error fetching NHL game log for ${playerId}:`, e.message);
-    return [];
-  }
-}
-
-// ============================================
-// LIVE SCORING
-// ============================================
-async function fetchLiveNBAStats(gameId) {
-  try {
-    const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${gameId}`);
-    const data = await response.json();
-    
-    const playerStats = {};
-    
-    for (const team of data.boxscore?.players || []) {
-      for (const statGroup of team.statistics || []) {
-        const headers = statGroup.labels || [];
-        const ptsIdx = headers.indexOf('PTS');
-        const rebIdx = headers.indexOf('REB');
-        const astIdx = headers.indexOf('AST');
-        const stlIdx = headers.indexOf('STL');
-        const blkIdx = headers.indexOf('BLK');
-        
-        for (const athlete of statGroup.athletes || []) {
-          const stats = athlete.stats || [];
-          const id = `nba-${athlete.athlete?.id}`;
-          
-          playerStats[id] = {
-            points: parseInt(stats[ptsIdx]) || 0,
-            rebounds: parseInt(stats[rebIdx]) || 0,
-            assists: parseInt(stats[astIdx]) || 0,
-            steals: parseInt(stats[stlIdx]) || 0,
-            blocks: parseInt(stats[blkIdx]) || 0
-          };
-        }
+    function findPublicGame() {
+      myName = document.getElementById('playerName').value.trim();
+      if (!myName) return showToast('Enter your name!', true);
+      socket.emit('findPublicLobby', { playerName: myName });
+    }
+    function copyLobbyCode() { navigator.clipboard.writeText(myLobbyId).then(() => showToast('Code copied!')); }
+    function shareLobby() {
+      const url = `${window.location.origin}?join=${myLobbyId}`;
+      if (navigator.share) {
+        navigator.share({ title: 'Join my Draft Royale lobby!', text: `Room code: ${myLobbyId}`, url }).catch(()=>{});
+      } else {
+        navigator.clipboard.writeText(url).then(() => showToast('Link copied!'));
       }
     }
-    
-    return playerStats;
-  } catch (err) {
-    console.error(`Error fetching NBA stats for ${gameId}:`, err);
-    return {};
-  }
-}
-
-async function fetchLiveNHLStats(gameId) {
-  try {
-    const response = await fetch(`https://api-web.nhle.com/v1/gamecenter/${gameId}/boxscore`);
-    if (!response.ok) {
-      console.error(`NHL boxscore API returned ${response.status} for game ${gameId}`);
-      return {};
+    function startDraft() { socket.emit('startDraft'); }
+    function leaveLobby() {
+      clearActiveGame();
+      mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
+      localStorage.setItem('dr_sessionId', mySessionId);
+      myLobbyId = null; isHost = false;
+      socket.disconnect();
+      socket.connect();
+      showScreen('homeScreen');
+      renderActiveGameBanner();
     }
-    const data = await response.json();
-    
-    const playerStats = {};
-    
-    for (const side of ['homeTeam', 'awayTeam']) {
-      // Forwards and defensemen
-      for (const posGroup of ['forwards', 'defense']) {
-        for (const player of (data[side]?.[posGroup] || [])) {
-          playerStats[`nhl-${player.playerId}`] = {
-            goals: player.goals || 0,
-            assists: player.assists || 0,
-            shotsOnGoal: player.sog || 0,
-            blockedShots: player.blockedShots || 0
-          };
-        }
+
+    // SOCKET EVENTS
+    socket.on('lobbyCreated', ({ lobbyId, lobby }) => {
+      myLobbyId = lobbyId; isHost = true; lobbyState = lobby;
+      saveActiveGame(lobbyId, 'waiting', myName);
+      showScreen('lobbyScreen');
+      document.getElementById('lobbyCode').textContent = lobbyId;
+      document.getElementById('hostControls').style.display = 'block';
+      document.getElementById('waitingMsg').style.display = 'none';
+      // Sync settings from server
+      if (lobby.settings) {
+        lobbySettings = { ...lobbySettings, ...lobby.settings, maxPlayers: lobby.maxPlayers, isPublic: lobby.isPublic };
+        document.getElementById('timeVal').textContent = lobbySettings.timePerPick;
+        document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
+        updateRosterUI();
       }
-      
-      // Goalies
-      for (const player of (data[side]?.goalies || [])) {
-        playerStats[`nhl-${player.playerId}`] = {
-          saves: player.saveShotsAgainst ? 
-            (parseInt(player.saveShotsAgainst.split('/')[0]) || 0) : 0,
-          goalsAgainst: player.goalsAgainst || 0,
-          isGoalie: true
-        };
-      }
-    }
-    
-    return playerStats;
-  } catch (err) {
-    console.error(`Error fetching NHL stats for ${gameId}:`, err);
-    return {};
-  }
-}
-
-function calculateFantasyScore(player) {
-  const s = player.stats;
-  
-  if (player.league === 'nba') {
-    let score = 0;
-    score += (s.points || 0) * SCORING.nba.points;
-    score += (s.rebounds || 0) * SCORING.nba.rebounds;
-    score += (s.assists || 0) * SCORING.nba.assists;
-    score += (s.steals || 0) * SCORING.nba.steals;
-    score += (s.blocks || 0) * SCORING.nba.blocks;
-    
-    // Double-double check (2+ categories with 10+)
-    const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
-    if (cats.length >= 2) score += SCORING.nba.doubleDouble;
-    if (cats.length >= 3) score += SCORING.nba.tripleDouble;
-    
-    return Math.round(score * 10) / 10;
-  }
-  
-  if (player.league === 'nhl') {
-    let score = 0;
-    
-    if (player.isGoalie) {
-      score += (s.saves || 0) * SCORING.nhl.saves;
-      if (s.goalsAgainst === 0 && s.saves > 0) score += SCORING.nhl.shutout;
-    } else {
-      score += (s.goals || 0) * SCORING.nhl.goals;
-      score += (s.assists || 0) * SCORING.nhl.assists;
-      score += (s.shotsOnGoal || 0) * SCORING.nhl.shotsOnGoal;
-      score += (s.blockedShots || 0) * SCORING.nhl.blockedShots;
-      if ((s.goals || 0) >= 3) score += SCORING.nhl.hatTrick;
-    }
-    
-    return Math.round(score * 10) / 10;
-  }
-  
-  return 0;
-}
-
-async function updateLiveScores(lobbyId) {
-  const lobby = lobbies[lobbyId];
-  if (!lobby || lobby.state !== 'live') return;
-  
-  // Gather unique game IDs
-  const nbaGameIds = new Set();
-  const nhlGameIds = new Set();
-  
-  for (const player of lobby.players) {
-    for (const pick of player.roster || []) {
-      if (pick.league === 'nba') nbaGameIds.add(pick.gameId);
-      if (pick.league === 'nhl') nhlGameIds.add(pick.gameId);
-    }
-  }
-  
-  // Fetch stats for all relevant games
-  const allStats = {};
-  
-  for (const gameId of nbaGameIds) {
-    const stats = await fetchLiveNBAStats(gameId);
-    Object.assign(allStats, stats);
-  }
-  
-  for (const gameId of nhlGameIds) {
-    const stats = await fetchLiveNHLStats(gameId);
-    Object.assign(allStats, stats);
-  }
-  
-  // Update player stats and scores
-  for (const player of lobby.players) {
-    let totalScore = 0;
-    
-    for (const pick of player.roster || []) {
-      if (allStats[pick.id]) {
-        pick.stats = allStats[pick.id];
-        pick.isGoalie = pick.isGoalie || allStats[pick.id].isGoalie;
-      }
-      pick.fantasyScore = calculateFantasyScore(pick);
-      totalScore += pick.fantasyScore;
-    }
-    
-    player.totalScore = Math.round(totalScore * 10) / 10;
-  }
-  
-  // Check if all games are finished (fetch schedule once per league, not per game)
-  let allFinished = true;
-  const hasNBA = lobby.games.some(g => g.league === 'nba');
-  const hasNHL = lobby.games.some(g => g.league === 'nhl');
-  const [nbaSchedule, nhlSchedule] = await Promise.all([
-    hasNBA ? fetchNBAGames(lobby.gameDate) : Promise.resolve([]),
-    hasNHL ? fetchNHLGames(lobby.gameDate) : Promise.resolve([])
-  ]);
-
-  // Now sync game status from schedule to individual picks for frontend display
-  const gameStatusMap = {};
-  for (const g of nbaSchedule) gameStatusMap[g.gameId] = g.status || g.state;
-  for (const g of nhlSchedule) gameStatusMap[g.gameId] = g.status || g.state;
-  
-  for (const player of lobby.players) {
-    for (const pick of player.roster || []) {
-      if (pick.gameId && gameStatusMap[pick.gameId]) {
-        pick.gameStatus = gameStatusMap[pick.gameId];
-      }
-    }
-  }
-
-  for (const game of lobby.games) {
-    if (game.league === 'nba') {
-      const found = nbaSchedule.find(g => g.gameId === game.gameId);
-      if (found) {
-        game.state = found.state;
-        game.status = found.status;
-      }
-      if (!found || found.state !== 'post') allFinished = false;
-    }
-    if (game.league === 'nhl') {
-      const found = nhlSchedule.find(g => g.gameId === game.gameId);
-      if (found) {
-        game.state = found.state;
-        game.status = found.status;
-      }
-      if (!found || (found.state !== 'OFF' && found.state !== 'FINAL')) allFinished = false;
-    }
-  }
-  
-  // If no games have started yet (future date draft), slow the polling
-  const anyStarted = lobby.games.some(g =>
-    (g.league === 'nba' && g.state !== 'pre') ||
-    (g.league === 'nhl' && g.state !== 'FUT')
-  );
-  if (!anyStarted && !allFinished) {
-    // Switch to slow polling (every 5 min) until games start
-    if (lobby.scoreInterval && !lobby._slowPolling) {
-      clearInterval(lobby.scoreInterval);
-      lobby._slowPolling = true;
-      lobby.scoreInterval = setInterval(() => updateLiveScores(lobbyId), 300000);
-      console.log(`Lobby ${lobbyId}: games haven't started, slowing poll to 5min`);
-    }
-  } else if (anyStarted && lobby._slowPolling) {
-    // Games started — switch back to fast polling
-    clearInterval(lobby.scoreInterval);
-    lobby._slowPolling = false;
-    lobby.scoreInterval = setInterval(() => updateLiveScores(lobbyId), SCORE_UPDATE_INTERVAL);
-    console.log(`Lobby ${lobbyId}: games started, fast polling resumed`);
-  }
-  
-  if (allFinished) {
-    lobby.state = 'finished';
-    clearInterval(lobby.scoreInterval);
-    lobby.scoreInterval = null;
-  }
-  
-  // Emit updated scores to all players
-  io.to(lobbyId).emit('scoreUpdate', {
-    players: lobby.players.map(p => ({
-      id: p.id,
-      name: p.name,
-      roster: p.roster,
-      totalScore: p.totalScore
-    })),
-    state: lobby.state
-  });
-}
-
-// ============================================
-// SOCKET.IO - REAL-TIME COMMUNICATION
-// ============================================
-function sanitizeName(name) {
-  return String(name || 'Player').replace(/[<>"'&]/g, '').trim().slice(0, 20) || 'Player';
-}
-
-io.on('connection', (socket) => {
-  console.log(`Client connected: ${socket.id}`);
-  
-  // Create a new lobby
-  socket.on('createLobby', async ({ playerName, maxPlayers, isPublic, settings, sessionId }) => {
-    // Prevent double-create: if this session is already in a lobby, ignore
-    if (sessions[sessionId] && lobbies[sessions[sessionId].lobbyId]) {
-      return socket.emit('error', { message: 'You are already in a game' });
-    }
-    
-    const safeName = sanitizeName(playerName);
-    const lobby = createLobby(safeName, maxPlayers, isPublic, settings || {});
-    
-    const player = {
-      id: sessionId,
-      name: safeName,
-      roster: [],
-      totalScore: 0,
-      isHost: true
-    };
-    
-    lobby.players.push(player);
-    lobby.host = sessionId;
-    
-    socket.join(lobby.id);
-    socket.lobbyId = lobby.id;
-    socket.sessionId = sessionId;
-    
-    sessions[sessionId] = { lobbyId: lobby.id, socketId: socket.id, playerName: safeName };
-    
-    socket.emit('lobbyCreated', {
-      lobbyId: lobby.id,
-      lobby: getLobbyState(lobby)
+      updateSettingsSummary();
+      buildLobbyDatePicker();
+      renderLobbyPlayers(lobby);
     });
-    
-    console.log(`Lobby ${lobby.id} created by ${playerName} (session ${sessionId})`);
-  });
 
-  // Host updates lobby settings
-  socket.on('updateSettings', ({ settings }) => {
-    const lobby = lobbies[socket.lobbyId];
-    if (!lobby || socket.sessionId !== lobby.host || lobby.state !== 'waiting') return;
-    
-    if (settings.maxPlayers !== undefined) {
-      lobby.maxPlayers = Math.min(Math.max(settings.maxPlayers, 1), 8);
+    socket.on('lobbyUpdate', (lobby) => {
+      if (!myLobbyId) {
+        myLobbyId = lobby.id;
+        showScreen('lobbyScreen');
+        document.getElementById('lobbyCode').textContent = lobby.id;
+        myName = lobby.players.find(p => p.id === mySessionId)?.name || myName;
+      }
+      lobbyState = lobby;
+      saveActiveGame(lobby.id, lobby.state || 'waiting', myName);
+      
+      // Always check host status — handles host transfer
+      const me = lobby.players.find(p => p.id === mySessionId);
+      if (me?.isHost && !isHost) {
+        isHost = true;
+        document.getElementById('hostControls').style.display = 'block';
+        document.getElementById('waitingMsg').style.display = 'none';
+        // Sync settings UI
+        if (lobby.settings) {
+          lobbySettings = { ...lobbySettings, ...lobby.settings, maxPlayers: lobby.maxPlayers, isPublic: lobby.isPublic };
+          document.getElementById('timeVal').textContent = lobbySettings.timePerPick;
+          document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
+          updateRosterUI();
+          buildLobbyDatePicker();
+        }
+        updateSettingsSummary();
+        showToast('You are now the host!');
+      } else if (!me?.isHost) {
+        isHost = false;
+        document.getElementById('hostControls').style.display = 'none';
+        document.getElementById('waitingMsg').style.display = 'block';
+      }
+
+      // Show settings to guests
+      if (!isHost && lobby.settings) {
+        const s = lobby.settings;
+        const slots = s.rosterSlots || { nba: 4, nhl: 2 };
+        let rosterStr;
+        if (s.leagues === 'nba') rosterStr = `${slots.nba} NBA`;
+        else if (s.leagues === 'nhl') rosterStr = `${slots.nhl} NHL`;
+        else rosterStr = `${slots.nba}🏀 + ${slots.nhl}🏒`;
+        const draftStr = s.draftType === 'snake' ? 'Snake' : 'Linear';
+        const dateLabel = getDateLabel(s.gameDate);
+        const el = document.getElementById('guestSettingsSummary');
+        if (el) el.textContent = `${dateLabel} · ${rosterStr} · ${draftStr} · ${s.timePerPick}s/pick · ${lobby.maxPlayers} max`;
+      }
+      renderLobbyPlayers(lobby);
+    });
+
+    socket.on('publicLobbyFound', ({ lobbyId }) => { socket.emit('joinLobby', { lobbyId, playerName: myName, sessionId: mySessionId }); });
+
+    socket.on('draftStart', ({ lobby, availablePlayers: players, draftOrder, currentPick, currentDrafter, timePerPick }) => {
+      lobbyState = lobby; availablePlayers = players; draftOrderList = draftOrder;
+      updateActiveGamePhase('drafting');
+      showScreen('draftScreen');
+      buildPositionFilters(players);
+      renderDraftRosters(lobby.players, currentDrafter);
+      amIDrafting = currentDrafter === mySessionId;
+      updateDraftUI(currentPick, currentDrafter, timePerPick);
+      renderPlayerPool();
+      if (amIDrafting) notifyMyTurn();
+    });
+
+    socket.on('pickMade', ({ picker, player, pickNumber, availablePlayers: remaining, autoPick, players }) => {
+      availablePlayers = remaining;
+      if (lobbyState) lobbyState.players = players;
+      addDraftLog(picker.name, player, autoPick);
+      // Re-render rosters immediately to show the pick
+      const currentDrafterNow = draftOrderList[pickNumber + 1] || null;
+      renderDraftRosters(players, currentDrafterNow);
+      renderPlayerPool();
+    });
+
+    socket.on('nextPick', ({ currentPick, currentDrafter, timePerPick }) => {
+      amIDrafting = currentDrafter === mySessionId;
+      renderDraftRosters(lobbyState?.players || [], currentDrafter);
+      updateDraftUI(currentPick, currentDrafter, timePerPick);
+      renderPlayerPool();
+      if (amIDrafting) notifyMyTurn();
+    });
+
+    let pendingLivePlayers = null;
+
+    socket.on('draftComplete', ({ players }) => {
+      if (draftTimerInterval) { clearInterval(draftTimerInterval); draftTimerInterval = null; }
+      pendingLivePlayers = players;
+      updateActiveGamePhase('live');
+      showScreen('recapScreen');
+      renderRecap(players);
+    });
+
+    function renderRecap(players) {
+      const body = document.getElementById('recapBody');
+      body.innerHTML = players.map(p => {
+        const picks = (p.roster || []).map((pick, i) => `
+          <div class="recap-pick ${pick.league}">
+            <span class="recap-pick-num">#${i+1}</span>
+            <span class="recap-pick-name">${pick.name}</span>
+            <span style="color:var(--text-dim);font-size:0.7rem;">${pick.team} · ${pick.position}</span>
+          </div>
+        `).join('');
+        const isMe = p.id === mySessionId;
+        return `<div class="recap-player ${isMe ? 'is-you' : ''}">
+          <div class="recap-pname">${p.name}${isMe ? ' (you)' : ''}</div>
+          <div class="recap-picks">${picks}</div>
+        </div>`;
+      }).join('');
     }
-    if (settings.isPublic !== undefined) {
-      lobby.isPublic = settings.isPublic;
-      const idx = publicLobbies.indexOf(lobby.id);
-      if (settings.isPublic && idx === -1) publicLobbies.push(lobby.id);
-      if (!settings.isPublic && idx !== -1) publicLobbies.splice(idx, 1);
+
+    function goToLive() {
+      showScreen('liveScreen');
+      if (pendingLivePlayers) renderLive(pendingLivePlayers, 'live');
     }
-    if (settings.draftType) lobby.settings.draftType = settings.draftType;
-    if (settings.timePerPick) lobby.settings.timePerPick = Math.min(Math.max(settings.timePerPick, 10), 120);
-    if (settings.leagues) lobby.settings.leagues = settings.leagues;
-    if (settings.rosterSlots) {
-      lobby.settings.rosterSlots = {
-        nba: Math.min(Math.max(settings.rosterSlots.nba || 0, 0), 10),
-        nhl: Math.min(Math.max(settings.rosterSlots.nhl || 0, 0), 10),
+
+    socket.on('scoreUpdate', ({ players, state }) => {
+      pendingLivePlayers = players; // keep updated in case still on recap
+      const activeScreen = document.querySelector('.screen.active');
+      if (activeScreen && activeScreen.id === 'liveScreen') {
+        renderLive(players, state);
+      }
+      if (state === 'finished') {
+        updateActiveGamePhase('finished');
+        const bar = document.getElementById('liveBar');
+        bar.classList.add('finished');
+        bar.querySelector('.live-pip-label').textContent = 'Final';
+        const sorted = [...players].sort((a, b) => b.totalScore - a.totalScore);
+        if (sorted.length) {
+          document.getElementById('winnerBanner').style.display = 'block';
+          document.getElementById('winnerName').textContent = `${sorted[0].name} Wins!`;
+          document.getElementById('winnerScore').textContent = `${sorted[0].totalScore} fantasy points`;
+        }
+      }
+    });
+
+    socket.on('error', ({ message }) => showToast(message, true));
+    socket.on('playerDisconnected', ({ playerName }) => showToast(`${playerName} disconnected`));
+
+    // RENDER
+    function renderLobbyPlayers(lobby) {
+      const c = document.getElementById('playerSlots');
+      const av = ['avatar-1','avatar-2','avatar-3','avatar-4','avatar-5'];
+      let html = '';
+      for (let i = 0; i < lobby.maxPlayers; i++) {
+        const p = lobby.players[i];
+        if (p) {
+          const isMe = p.id === mySessionId;
+          const dcClass = p.disconnected ? 'disconnected' : '';
+          html += `<div class="player-card-lobby ${isMe?'is-you':''} ${dcClass}" style="animation-delay:${i*0.08}s">
+            <div class="player-avatar ${av[i]}">${p.name.charAt(0).toUpperCase()}</div>
+            <div class="player-card-name">${p.name}</div>
+            ${isMe?'<span class="player-card-you">You</span>':''}
+            ${p.isHost?'<span class="host-chip">Host</span>':''}
+            ${p.disconnected?'<span class="dc-chip">Offline</span>':''}
+          </div>`;
+        } else {
+          html += `<div class="empty-slot-lobby">Waiting for player...</div>`;
+        }
+      }
+      c.innerHTML = html;
+    }
+
+    function renderDraftRosters(players, currentDrafter) {
+      const c = document.getElementById('draftRosters');
+      const s = lobbyState?.settings || {};
+      const slots = s.rosterSlots || { nba: 4, nhl: 2 };
+      let rSize;
+      if (s.leagues === 'nba') rSize = slots.nba;
+      else if (s.leagues === 'nhl') rSize = slots.nhl;
+      else rSize = (slots.nba || 0) + (slots.nhl || 0);
+      rSize = rSize || 5;
+      c.innerHTML = players.map(p => {
+        const isActive = p.id === currentDrafter, isMe = p.id === mySessionId;
+        const roster = p.roster || [];
+        let slots = '';
+        for (let i = 0; i < rSize; i++) {
+          if (roster[i]) {
+            const r = roster[i];
+            slots += `<div class="mini-pick filled ${r.league}"><div class="mini-pick-name">${r.name}</div><div class="mini-pick-team">${r.team} · ${r.position}</div></div>`;
+          } else slots += `<div class="mini-pick empty">—</div>`;
+        }
+        return `<div class="roster-mini ${isActive?'active-drafter':''} ${isMe?'is-you':''}">
+          <div class="roster-mini-name">${p.name}${isMe?' (you)':''} ${isActive?'<span class="picking-badge">Picking</span>':''}</div>
+          ${slots}</div>`;
+      }).join('');
+    }
+
+    function buildPositionFilters(players) {
+      const positions = new Set(players.map(p => p.position));
+      const sorted = [...positions].sort();
+      const c = document.getElementById('positionFilters');
+      c.innerHTML = `<button class="filter-chip active-pos" data-pos="all" onclick="setPosFilter('all',this)">All Pos</button>` +
+        sorted.map(pos => `<button class="filter-chip" data-pos="${pos}" onclick="setPosFilter('${pos}',this)">${pos}</button>`).join('');
+    }
+
+    function setPosFilter(pos, btn) {
+      currentPosFilter = pos;
+      document.querySelectorAll('#positionFilters .filter-chip').forEach(b => b.classList.remove('active-pos'));
+      btn.classList.add('active-pos');
+      filterPlayers();
+    }
+
+    function getMyLeagueCounts() {
+      const me = lobbyState?.players?.find(p => p.id === mySessionId);
+      const roster = me?.roster || [];
+      return {
+        nba: roster.filter(r => r.league === 'nba').length,
+        nhl: roster.filter(r => r.league === 'nhl').length
       };
     }
-    if (settings.gameDate !== undefined) lobby.settings.gameDate = settings.gameDate;
-    
-    io.to(lobby.id).emit('lobbyUpdate', getLobbyState(lobby));
-  });
-  
-  // Join existing lobby
-  socket.on('joinLobby', ({ lobbyId, playerName, sessionId }) => {
-    const code = lobbyId.toUpperCase();
-    const safeName = sanitizeName(playerName);
-    const lobby = lobbies[code];
-    
-    // Prevent joining if already in a lobby
-    if (sessions[sessionId] && lobbies[sessions[sessionId].lobbyId]) {
-      return socket.emit('error', { message: 'You are already in a game' });
+
+    function getLeagueSlots() {
+      const s = lobbyState?.settings || {};
+      return s.rosterSlots || { nba: 4, nhl: 2 };
     }
-    
-    if (!lobby) {
-      return socket.emit('error', { message: 'Lobby not found' });
-    }
-    if (lobby.state !== 'waiting') {
-      return socket.emit('error', { message: 'Game already in progress' });
-    }
-    if (lobby.players.length >= lobby.maxPlayers) {
-      return socket.emit('error', { message: 'Lobby is full' });
-    }
-    
-    const player = {
-      id: sessionId,
-      name: safeName,
-      roster: [],
-      totalScore: 0,
-      isHost: false
-    };
-    
-    lobby.players.push(player);
-    socket.join(code);
-    socket.lobbyId = code;
-    socket.sessionId = sessionId;
-    
-    sessions[sessionId] = { lobbyId: code, socketId: socket.id, playerName: safeName };
-    
-    // Remove from public lobbies if full
-    if (lobby.players.length >= lobby.maxPlayers) {
-      const idx = publicLobbies.indexOf(code);
-      if (idx !== -1) publicLobbies.splice(idx, 1);
-    }
-    
-    io.to(code).emit('lobbyUpdate', getLobbyState(lobby));
-    console.log(`${playerName} joined lobby ${code} (session ${sessionId})`);
-  });
-  
-  // Rejoin after disconnect/refresh
-  socket.on('rejoin', ({ sessionId }) => {
-    const session = sessions[sessionId];
-    if (!session) {
-      return socket.emit('rejoinFailed', { reason: 'no_session' });
-    }
-    
-    const lobby = lobbies[session.lobbyId];
-    if (!lobby) {
-      delete sessions[sessionId];
-      return socket.emit('rejoinFailed', { reason: 'lobby_gone' });
-    }
-    
-    const player = lobby.players.find(p => p.id === sessionId);
-    if (!player) {
-      delete sessions[sessionId];
-      return socket.emit('rejoinFailed', { reason: 'player_gone' });
-    }
-    
-    // Update mappings
-    session.socketId = socket.id;
-    socket.lobbyId = lobby.id;
-    socket.sessionId = sessionId;
-    player.disconnected = false;
-    
-    socket.join(lobby.id);
-    
-    const lobbyStateData = getLobbyState(lobby);
-    const playerIsHost = lobby.host === sessionId;
-    
-    if (lobby.state === 'waiting') {
-      socket.emit('rejoinState', {
-        phase: 'waiting',
-        lobby: lobbyStateData,
-        isHost: playerIsHost,
-        sessionId
-      });
-    } else if (lobby.state === 'drafting') {
-      // Calculate remaining time on current pick
-      const elapsed = lobby.pickStartedAt ? Math.floor((Date.now() - lobby.pickStartedAt) / 1000) : 0;
-      const timeRemaining = Math.max((lobby.settings.timePerPick || 30) - elapsed, 1);
+
+    function renderPlayerPool() {
+      const c = document.getElementById('playerPool');
+      const search = (document.getElementById('playerSearch')?.value||'').toLowerCase();
+      const banner = document.getElementById('waitingBanner');
+      let filtered = availablePlayers;
+      if (currentFilter !== 'all') filtered = filtered.filter(p => p.league === currentFilter);
+      if (currentPosFilter !== 'all') filtered = filtered.filter(p => p.position === currentPosFilter);
+      if (search) filtered = filtered.filter(p => p.name.toLowerCase().includes(search) || p.team.toLowerCase().includes(search) || (p.teamName||'').toLowerCase().includes(search));
       
-      socket.emit('rejoinState', {
-        phase: 'drafting',
-        lobby: lobbyStateData,
-        isHost: playerIsHost,
-        sessionId,
-        availablePlayers: lobby.availablePlayers,
-        draftOrder: lobby.draftOrder,
-        currentPick: lobby.currentPick,
-        currentDrafter: lobby.draftOrder[lobby.currentPick],
-        timePerPick: timeRemaining
-      });
-    } else {
-      socket.emit('rejoinState', {
-        phase: lobby.state,
-        lobby: lobbyStateData,
-        isHost: playerIsHost,
-        sessionId,
-        players: lobby.players.map(p => ({
-          id: p.id, name: p.name, roster: p.roster, totalScore: p.totalScore
-        }))
-      });
-    }
-    
-    io.to(lobby.id).emit('playerReconnected', { playerName: player.name });
-    console.log(`${player.name} rejoined lobby ${lobby.id} (session ${sessionId})`);
-  });
-  
-  // Find a public lobby
-  socket.on('findPublicLobby', ({ playerName }) => {
-    let found = null;
-    
-    for (const lobbyId of publicLobbies) {
-      const lobby = lobbies[lobbyId];
-      if (lobby && lobby.state === 'waiting' && lobby.players.length < lobby.maxPlayers) {
-        found = lobbyId;
-        break;
-      }
-    }
-    
-    if (found) {
-      socket.emit('publicLobbyFound', { lobbyId: found });
-    } else {
-      socket.emit('error', { message: 'No public lobbies available. Create one!' });
-    }
-  });
-  
-  // Host starts the draft
-  socket.on('startDraft', async () => {
-    const lobby = lobbies[socket.lobbyId];
-    if (!lobby) return;
-    if (socket.sessionId !== lobby.host) return;
-    if (lobby.players.length < 1) {
-      return socket.emit('error', { message: 'Need at least 1 player' });
-    }
-    
-    lobby.state = 'drafting';
-    const { draftType, timePerPick, leagues, gameDate } = lobby.settings;
-    
-    // Fetch games for the target date based on league setting
-    const fetchNBA = leagues === 'nba' || leagues === 'both';
-    const fetchNHL = leagues === 'nhl' || leagues === 'both';
-    
-    const [nbaGames, nhlGames] = await Promise.all([
-      fetchNBA ? fetchNBAGames(gameDate) : Promise.resolve([]),
-      fetchNHL ? fetchNHLGames(gameDate) : Promise.resolve([])
-    ]);
-    
-    // For future dates, all games are draftable.
-    // For today, allow upcoming AND in-progress games (exclude only finished).
-    const isFutureDate = gameDate && new Date(gameDate).toDateString() !== new Date().toDateString();
-    const upcomingNBA = isFutureDate ? nbaGames : nbaGames.filter(g => g.state !== 'post');
-    const upcomingNHL = isFutureDate ? nhlGames : nhlGames.filter(g => g.state !== 'OFF' && g.state !== 'FINAL');
-    
-    // Store ALL games for live scoring later
-    lobby.games = [...nbaGames, ...nhlGames];
-    lobby.gameDate = gameDate; // remember which date we're tracking
-    
-    if (upcomingNBA.length === 0 && upcomingNHL.length === 0) {
-      lobby.state = 'waiting';
-      const leagueStr = leagues === 'both' ? 'NBA or NHL' : leagues.toUpperCase();
-      const dateLabel = isFutureDate ? ` on ${new Date(gameDate).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
-      return socket.emit('error', { message: `No ${leagueStr} games found${dateLabel}!` });
-    }
-    
-    const [nbaPlayers, nhlPlayers] = await Promise.all([
-      upcomingNBA.length > 0 ? fetchNBAPlayersForGames(upcomingNBA) : Promise.resolve([]),
-      upcomingNHL.length > 0 ? fetchNHLPlayersForGames(upcomingNHL) : Promise.resolve([])
-    ]);
-    
-    lobby.availablePlayers = [...nbaPlayers, ...nhlPlayers];
-    
-    if (lobby.availablePlayers.length === 0) {
-      lobby.state = 'waiting';
-      return socket.emit('error', { message: 'No players available to draft. Try again when there are upcoming games.' });
-    }
-    
-    // Enrich players with season averages (runs in parallel batches)
-    console.log(`Enriching ${nbaPlayers.length} NBA + ${nhlPlayers.length} NHL players with season stats...`);
-    await Promise.all([
-      nbaPlayers.length > 0 ? enrichNBAPlayerAverages(lobby.availablePlayers) : Promise.resolve(),
-      nhlPlayers.length > 0 ? enrichNHLPlayerAverages(lobby.availablePlayers) : Promise.resolve()
-    ]);
-    
-    // Assign tier badges based on projected score
-    assignTierBadges(lobby.availablePlayers);
-    
-    // Sort by projected score descending (best players first)
-    lobby.availablePlayers.sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
-    
-    console.log(`Draft pool ready: ${upcomingNBA.length} NBA (${nbaPlayers.length} players), ${upcomingNHL.length} NHL (${nhlPlayers.length} players) | Settings: ${draftType} draft, ${timePerPick}s/pick, leagues=${leagues}, slots=${JSON.stringify(lobby.settings.rosterSlots)}`);
-    
-    // Randomize player order then generate draft order
-    const rosterSize = getRosterSize(lobby.settings);
-    const shuffled = [...lobby.players].sort(() => Math.random() - 0.5);
-    lobby.draftOrder = generateDraftOrder(shuffled, rosterSize, draftType);
-    lobby.currentPick = 0;
-    
-    io.to(lobby.id).emit('draftStart', {
-      lobby: getLobbyState(lobby),
-      availablePlayers: lobby.availablePlayers,
-      draftOrder: lobby.draftOrder,
-      currentPick: 0,
-      currentDrafter: lobby.draftOrder[0],
-      timePerPick: timePerPick
-    });
-    
-    // Start draft timer
-    startDraftTimer(lobby);
-    
-    console.log(`Draft started in lobby ${lobby.id}`);
-  });
-  
-  // Player makes a draft pick
-  socket.on('draftPick', ({ playerId }) => {
-    const lobby = lobbies[socket.lobbyId];
-    if (!lobby || lobby.state !== 'drafting') return;
-    
-    // Check it's this player's turn
-    const currentDrafter = lobby.draftOrder[lobby.currentPick];
-    if (socket.sessionId !== currentDrafter) return;
-    
-    // Check player is available
-    const playerIdx = lobby.availablePlayers.findIndex(p => p.id === playerId);
-    if (playerIdx === -1) return;
-    
-    const picked = lobby.availablePlayers[playerIdx];
-    const drafter = lobby.players.find(p => p.id === socket.sessionId);
-    
-    // Enforce league roster slots
-    const slots = lobby.settings.rosterSlots || { nba: 10, nhl: 10 };
-    const leagues = lobby.settings.leagues;
-    if (leagues === 'both' || leagues === picked.league) {
-      const leagueCount = (drafter.roster || []).filter(r => r.league === picked.league).length;
-      const maxForLeague = slots[picked.league] || 0;
-      if (leagueCount >= maxForLeague) {
-        return socket.emit('error', { message: `${picked.league.toUpperCase()} roster full (${maxForLeague}/${maxForLeague})` });
-      }
-    }
-    
-    // Make the pick
-    lobby.availablePlayers.splice(playerIdx, 1);
-    drafter.roster.push(picked);
-    
-    // Clear timer
-    if (lobby.draftTimer) {
-      clearTimeout(lobby.draftTimer);
-      lobby.draftTimer = null;
-    }
-    
-    // Advance to next pick
-    lobby.currentPick++;
-    
-    io.to(lobby.id).emit('pickMade', {
-      picker: { id: drafter.id, name: drafter.name },
-      player: picked,
-      pickNumber: lobby.currentPick - 1,
-      availablePlayers: lobby.availablePlayers,
-      players: lobby.players.map(p => ({
-        id: p.id,
-        name: p.name,
-        roster: p.roster
-      }))
-    });
-    
-    // Check if draft is complete
-    if (lobby.currentPick >= lobby.draftOrder.length) {
-      endDraft(lobby);
-    } else {
-      // Next pick
-      io.to(lobby.id).emit('nextPick', {
-        currentPick: lobby.currentPick,
-        currentDrafter: lobby.draftOrder[lobby.currentPick],
-        timePerPick: lobby.settings.timePerPick
-      });
-      startDraftTimer(lobby);
-    }
-  });
-  
-  // Chat message
-  socket.on('chatMessage', ({ message }) => {
-    const lobby = lobbies[socket.lobbyId];
-    if (!lobby) return;
-    
-    const player = lobby.players.find(p => p.id === socket.sessionId);
-    if (!player) return;
-    
-    const safeMsg = String(message || '').replace(/[<>"'&]/g, '').trim().slice(0, 300);
-    if (!safeMsg) return;
-    
-    io.to(lobby.id).emit('chatMessage', {
-      from: player.name,
-      message: safeMsg,
-      timestamp: Date.now()
-    });
-  });
-  
-  // Disconnect
-  socket.on('disconnect', () => {
-    const lobbyId = socket.lobbyId;
-    const sessionId = socket.sessionId;
-    if (!lobbyId || !lobbies[lobbyId]) return;
-    
-    const lobby = lobbies[lobbyId];
-    
-    if (lobby.state === 'waiting') {
-      // Remove player from lobby
-      lobby.players = lobby.players.filter(p => p.id !== sessionId);
-      if (sessionId) delete sessions[sessionId];
-      
-      if (lobby.players.length === 0) {
-        // Delete empty lobby
-        delete lobbies[lobbyId];
-        const idx = publicLobbies.indexOf(lobbyId);
-        if (idx !== -1) publicLobbies.splice(idx, 1);
-      } else {
-        // Transfer host if needed
-        if (lobby.host === sessionId) {
-          lobby.host = lobby.players[0].id;
-          lobby.players[0].isHost = true;
+      // Check league slot limits for my roster
+      const counts = getMyLeagueCounts();
+      const slots = getLeagueSlots();
+      const nbaFull = counts.nba >= (slots.nba || 99);
+      const nhlFull = counts.nhl >= (slots.nhl || 99);
+
+      banner.style.display = amIDrafting ? 'none' : 'block';
+
+      // Slot indicator
+      const leagues = lobbyState?.settings?.leagues || 'both';
+      let slotHTML = '';
+      if (amIDrafting) {
+        if (leagues === 'both' || leagues === 'nba') {
+          slotHTML += `<span class="slot-pill ${nbaFull?'slot-full':''}">🏀 ${counts.nba}/${slots.nba}</span>`;
         }
-        io.to(lobbyId).emit('lobbyUpdate', getLobbyState(lobby));
+        if (leagues === 'both' || leagues === 'nhl') {
+          slotHTML += `<span class="slot-pill ${nhlFull?'slot-full':''}">🏒 ${counts.nhl}/${slots.nhl}</span>`;
+        }
       }
-    } else {
-      // During draft/live, mark as disconnected but keep session for rejoin
-      const player = lobby.players.find(p => p.id === sessionId);
-      if (player) {
-        player.disconnected = true;
-        io.to(lobbyId).emit('playerDisconnected', { playerName: player.name, sessionId });
-      }
-    }
-    
-    console.log(`Client disconnected: ${socket.id} (session ${sessionId || 'none'})`);
-  });
-});
+      document.getElementById('slotIndicator').innerHTML = slotHTML;
 
-// ============================================
-// DRAFT TIMER
-// ============================================
-function startDraftTimer(lobby) {
-  const timePerPick = lobby.settings.timePerPick || 30;
-  lobby.pickStartedAt = Date.now(); // track for reconnection
-  lobby.draftTimer = setTimeout(() => {
-    // Auto-pick: best available player that fits roster slots
-    const currentDrafter = lobby.draftOrder[lobby.currentPick];
-    const drafter = lobby.players.find(p => p.id === currentDrafter);
-    
-    if (lobby.availablePlayers.length > 0 && drafter) {
-      const slots = lobby.settings.rosterSlots || { nba: 10, nhl: 10 };
-      const nbaCount = (drafter.roster || []).filter(r => r.league === 'nba').length;
-      const nhlCount = (drafter.roster || []).filter(r => r.league === 'nhl').length;
-      
-      // Find best available that fits a league slot
-      let autoIdx = lobby.availablePlayers.findIndex(p => {
-        if (p.league === 'nba' && nbaCount >= (slots.nba || 0)) return false;
-        if (p.league === 'nhl' && nhlCount >= (slots.nhl || 0)) return false;
-        return true;
-      });
-      if (autoIdx === -1) autoIdx = 0; // fallback
-      
-      const autoPick = lobby.availablePlayers.splice(autoIdx, 1)[0];
-      drafter.roster.push(autoPick);
-      
-      lobby.currentPick++;
-      
-      io.to(lobby.id).emit('pickMade', {
-        picker: { id: drafter.id, name: drafter.name },
-        player: autoPick,
-        pickNumber: lobby.currentPick - 1,
-        availablePlayers: lobby.availablePlayers,
-        autoPick: true,
-        players: lobby.players.map(p => ({
-          id: p.id,
-          name: p.name,
-          roster: p.roster
-        }))
-      });
-      
-      if (lobby.currentPick >= lobby.draftOrder.length) {
-        endDraft(lobby);
+      c.innerHTML = filtered.map(p => {
+        const avgLine = getAvgLine(p);
+        const tierClass = p.tier || 'bench';
+        const tierLabel = p.tierLabel || '⚪ Bench';
+        const leagueFull = (p.league === 'nba' && nbaFull) || (p.league === 'nhl' && nhlFull);
+        const isLocked = !amIDrafting || leagueFull;
+        return `
+        <div class="player-card ${p.league} ${isLocked?'disabled':''} ${leagueFull?'league-full':''}" onclick="${leagueFull?'':`openPlayerModal('${p.id}')`}">
+          ${p.headshot?`<img class="pc-photo" src="${p.headshot}" onerror="this.outerHTML='<div class=\\'pc-photo-placeholder\\'><span class=\\'pc-pos-badge\\'>${p.position}</span></div>'">`:`<div class="pc-photo-placeholder"><span class="pc-pos-badge">${p.position}</span></div>`}
+          <div class="pc-info">
+            <div class="pc-name">${p.name}</div>
+            <div class="pc-meta"><div class="pc-league-dot ${p.league}"></div><span class="pc-team">${p.team} · ${p.position}</span></div>
+            <div class="pc-avgs">${avgLine}</div>
+          </div>
+          <div class="pc-right">
+            <div class="pc-proj">${p.projectedScore || 0}</div>
+            <div class="pc-proj-label">Proj</div>
+            ${leagueFull ? '<span class="pc-tier bench">FULL</span>' : `<span class="pc-tier ${tierClass}">${tierLabel}</span>`}
+          </div>
+        </div>`;
+      }).join('');
+
+      if (!filtered.length) c.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-dim);">No players found</div>';
+    }
+
+    function getAvgLine(p) {
+      const a = p.seasonAvg || {};
+      if (p.league === 'nba') {
+        return `${a.points||0} ppg · ${a.rebounds||0} rpg · ${a.assists||0} apg`;
+      }
+      if (p.league === 'nhl') {
+        if (p.isGoalie) return `${a.saves||0} sv/g · ${a.goalsAgainst||0} ga/g`;
+        return `${a.goals||0} g/g · ${a.assists||0} a/g · ${a.shotsOnGoal||0} sog/g`;
+      }
+      return '';
+    }
+
+    function notifyMyTurn() {
+      // Vibrate on mobile
+      if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+      // Audio beep using Web Audio API
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.3);
+      } catch(e) {}
+    }
+
+    function draftPlayer(playerId) { if (!amIDrafting) return; socket.emit('draftPick', { playerId }); closeModal(); }
+
+    // Player Detail Modal
+    async function openPlayerModal(playerId) {
+      const p = availablePlayers.find(pl => pl.id === playerId);
+      if (!p) return;
+
+      const modal = document.getElementById('playerModal');
+      modal.classList.add('open');
+      document.body.style.overflow = 'hidden';
+
+      // Header
+      document.getElementById('modalHeader').innerHTML = `
+        ${p.headshot ? `<img class="modal-photo" src="${p.headshot}" onerror="this.outerHTML='<div class=\\'modal-photo-placeholder\\'>${p.position}</div>'">`
+          : `<div class="modal-photo-placeholder">${p.position}</div>`}
+        <div>
+          <div class="modal-name">${p.name}</div>
+          <div class="modal-team-pos">${p.teamName || p.team} · ${p.position} · <span class="pc-tier ${p.tier||'bench'}" style="display:inline;">${p.tierLabel||'⚪ Bench'}</span></div>
+        </div>`;
+
+      // Season averages
+      const a = p.seasonAvg || {};
+      let avgCells = '';
+      if (p.league === 'nba') {
+        avgCells = [
+          { val: a.points||0, label: 'PPG' },
+          { val: a.rebounds||0, label: 'RPG' },
+          { val: a.assists||0, label: 'APG' },
+          { val: a.steals||0, label: 'SPG' },
+          { val: a.blocks||0, label: 'BPG' },
+        ].map(s => `<div class="modal-avg-cell"><div class="modal-avg-val">${s.val}</div><div class="modal-avg-label">${s.label}</div></div>`).join('');
+      } else if (p.isGoalie) {
+        avgCells = [
+          { val: a.saves||0, label: 'SV/G' },
+          { val: a.goalsAgainst||0, label: 'GA/G' },
+        ].map(s => `<div class="modal-avg-cell"><div class="modal-avg-val">${s.val}</div><div class="modal-avg-label">${s.label}</div></div>`).join('');
       } else {
-        io.to(lobby.id).emit('nextPick', {
-          currentPick: lobby.currentPick,
-          currentDrafter: lobby.draftOrder[lobby.currentPick],
-          timePerPick: timePerPick
-        });
-        startDraftTimer(lobby);
+        avgCells = [
+          { val: a.goals||0, label: 'G/G' },
+          { val: a.assists||0, label: 'A/G' },
+          { val: a.shotsOnGoal||0, label: 'SOG/G' },
+        ].map(s => `<div class="modal-avg-cell"><div class="modal-avg-val">${s.val}</div><div class="modal-avg-label">${s.label}</div></div>`).join('');
       }
-    } else {
-      // No players left or drafter not found — end draft early
-      console.log(`Lobby ${lobby.id}: player pool exhausted or drafter missing, ending draft early`);
-      endDraft(lobby);
-    }
-  }, timePerPick * 1000);
-}
+      // Add projected score cell
+      avgCells += `<div class="modal-avg-cell" style="border-color:rgba(255,87,34,0.3);"><div class="modal-avg-val" style="color:var(--accent);">${p.projectedScore||0}</div><div class="modal-avg-label">Proj FPts</div></div>`;
+      document.getElementById('modalAvgGrid').innerHTML = avgCells;
 
-function endDraft(lobby) {
-  lobby.state = 'live';
-  
-  if (lobby.draftTimer) {
-    clearTimeout(lobby.draftTimer);
-    lobby.draftTimer = null;
-  }
-  
-  io.to(lobby.id).emit('draftComplete', {
-    players: lobby.players.map(p => ({
-      id: p.id,
-      name: p.name,
-      roster: p.roster,
-      totalScore: 0
-    }))
-  });
-  
-  // Start live score updates
-  lobby.scoreInterval = setInterval(() => {
-    updateLiveScores(lobby.id);
-  }, SCORE_UPDATE_INTERVAL);
-  
-  // Initial score fetch
-  updateLiveScores(lobby.id);
-  
-  console.log(`Draft complete in lobby ${lobby.id}, live scoring started`);
-}
+      // Draft bar - check league slot limits
+      const counts = getMyLeagueCounts();
+      const slots = getLeagueSlots();
+      const leagueFull = (p.league === 'nba' && counts.nba >= (slots.nba || 99)) ||
+                         (p.league === 'nhl' && counts.nhl >= (slots.nhl || 99));
 
-// ============================================
-// HELPERS
-// ============================================
-function getLobbyState(lobby) {
-  return {
-    id: lobby.id,
-    hostName: lobby.hostName,
-    maxPlayers: lobby.maxPlayers,
-    isPublic: lobby.isPublic,
-    state: lobby.state,
-    settings: lobby.settings,
-    players: lobby.players.map(p => ({
-      id: p.id,
-      name: p.name,
-      isHost: p.isHost,
-      roster: p.roster,
-      totalScore: p.totalScore,
-      disconnected: p.disconnected || false
-    }))
-  };
-}
-
-// ============================================
-// REST API ROUTES
-// ============================================
-
-// Get public lobbies
-app.get('/api/lobbies', (req, res) => {
-  const available = publicLobbies
-    .map(id => lobbies[id])
-    .filter(l => l && l.state === 'waiting' && l.players.length < l.maxPlayers)
-    .map(l => ({
-      id: l.id,
-      hostName: l.hostName,
-      players: l.players.length,
-      maxPlayers: l.maxPlayers
-    }));
-  
-  res.json(available);
-});
-
-// Get today's games (for display)
-app.get('/api/games', async (req, res) => {
-  const targetDate = req.query.date || null; // ISO date string or null for today
-  const [nbaGames, nhlGames] = await Promise.all([
-    fetchNBAGames(targetDate),
-    fetchNHLGames(targetDate)
-  ]);
-  
-  res.json([...nbaGames, ...nhlGames]);
-});
-
-// Get scoring rules
-app.get('/api/scoring', (req, res) => {
-  res.json(SCORING);
-});
-
-// Get player game log (last 3 games)
-app.get('/api/gamelog/:league/:athleteId', async (req, res) => {
-  const { league, athleteId } = req.params;
-  try {
-    let games;
-    if (league === 'nba') {
-      games = await fetchNBAGameLog(athleteId);
-    } else if (league === 'nhl') {
-      games = await fetchNHLGameLog(athleteId);
-    } else {
-      return res.status(400).json({ error: 'Invalid league' });
-    }
-    res.json({ games, league });
-  } catch (e) {
-    res.status(500).json({ error: 'Failed to fetch game log' });
-  }
-});
-
-// ============================================
-// CLEANUP - Remove stale lobbies every 5 minutes
-// ============================================
-setInterval(() => {
-  const now = Date.now();
-  const staleTime = 4 * 60 * 60 * 1000; // 4 hours for active lobbies
-  const finishedTime = 30 * 60 * 1000;   // 30 min for finished lobbies
-  
-  for (const [id, lobby] of Object.entries(lobbies)) {
-    const isOld = now - lobby.createdAt > staleTime;
-    const isFinishedOld = lobby.state === 'finished' && now - lobby.createdAt > finishedTime;
-    const allDisconnected = lobby.state !== 'waiting' && lobby.players.every(p => p.disconnected);
-
-    if (isOld || isFinishedOld || allDisconnected) {
-      if (lobby.scoreInterval) clearInterval(lobby.scoreInterval);
-      if (lobby.draftTimer) clearTimeout(lobby.draftTimer);
-      // Clean up sessions for this lobby's players
-      for (const p of lobby.players) {
-        delete sessions[p.id];
+      let draftBarHTML;
+      if (!amIDrafting) {
+        draftBarHTML = `<div style="flex:1;text-align:center;color:var(--text-dim);font-size:0.85rem;">Not your pick</div>`;
+      } else if (leagueFull) {
+        draftBarHTML = `<div style="flex:1;text-align:center;color:var(--accent);font-size:0.85rem;font-weight:600;">${p.league.toUpperCase()} roster full (${p.league === 'nba' ? counts.nba : counts.nhl}/${p.league === 'nba' ? slots.nba : slots.nhl})</div>`;
+      } else {
+        draftBarHTML = `<button class="btn btn-hero" onclick="draftPlayer('${p.id}')">⚔️ DRAFT ${p.name.split(' ').pop().toUpperCase()}</button>`;
       }
-      delete lobbies[id];
-      
-      const idx = publicLobbies.indexOf(id);
-      if (idx !== -1) publicLobbies.splice(idx, 1);
-      
-      console.log(`Cleaned up lobby ${id} (${isOld?'stale':isFinishedOld?'finished':'all disconnected'})`);
-    }
-  }
-}, 5 * 60 * 1000);
+      document.getElementById('modalDraftBar').innerHTML = draftBarHTML;
 
-// ============================================
-// START SERVER
-// ============================================
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Draft Royale running on port ${PORT}`);
-});
+      // Game log - fetch async
+      const logBody = document.getElementById('modalGameLogBody');
+      logBody.innerHTML = '<div class="modal-loading">Loading game log...</div>';
+
+      try {
+        const athleteId = p.athleteId || p.id.replace('nba-','').replace('nhl-','');
+        const res = await fetch(`/api/gamelog/${p.league}/${athleteId}`);
+        const data = await res.json();
+
+        if (!data.games || data.games.length === 0) {
+          logBody.innerHTML = '<div class="modal-loading" style="color:var(--text-dim);">No recent games found</div>';
+          return;
+        }
+
+        logBody.innerHTML = data.games.map(g => {
+          let statLine = '', fpts = 0;
+          if (p.league === 'nba') {
+            const s = g.stats;
+            statLine = `${s.points}p ${s.rebounds}r ${s.assists}a ${s.steals}s ${s.blocks}b`;
+            fpts = (s.points*1) + (s.rebounds*1.5) + (s.assists*2) + (s.steals*3) + (s.blocks*3);
+            // Bonuses
+            const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
+            if (cats.length >= 3) fpts += 10;
+            else if (cats.length >= 2) fpts += 5;
+          } else {
+            const s = g.stats;
+            if (s.saves !== undefined) {
+              statLine = `${s.saves}sv ${s.goalsAgainst}ga ${s.savePct||''}`;
+              fpts = (s.saves||0)*0.5;
+              if ((s.goalsAgainst||0) === 0 && (s.saves||0) > 0) fpts += 5;
+            } else {
+              statLine = `${s.goals}g ${s.assists}a ${s.shotsOnGoal||0}sog`;
+              fpts = (s.goals||0)*5 + (s.assists||0)*3 + (s.shotsOnGoal||0)*1;
+              if ((s.goals||0) >= 3) fpts += 3;
+            }
+          }
+          fpts = Math.round(fpts * 10) / 10;
+          return `<div class="modal-gamelog-row">
+            <div class="modal-gl-date">${g.date}</div>
+            <div class="modal-gl-opp">${g.opponent}</div>
+            <div class="modal-gl-stats">${statLine}</div>
+            <div class="modal-gl-fpts">${fpts}</div>
+          </div>`;
+        }).join('');
+      } catch (e) {
+        logBody.innerHTML = '<div class="modal-loading" style="color:var(--text-dim);">Could not load game log</div>';
+      }
+    }
+
+    function closeModal() {
+      const modal = document.getElementById('playerModal');
+      modal.classList.remove('open');
+      document.body.style.overflow = '';
+    }
+
+    // Close modal on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeModal();
+    });
+
+    function updateDraftUI(currentPick, currentDrafter, timePerPick) {
+      const numPlayers = lobbyState?.players?.length || 2;
+      const totalPicks = draftOrderList.length || (numPlayers * 5);
+      const round = Math.floor(currentPick / numPlayers) + 1;
+      const drafter = lobbyState?.players.find(p => p.id === currentDrafter);
+      const isMe = currentDrafter === mySessionId;
+      const turnEl = document.getElementById('draftTurnName');
+      turnEl.textContent = isMe ? '🎯 Your Pick!' : `${drafter?.name || '?'}`;
+      turnEl.className = 'draft-turn-name' + (isMe ? ' is-you' : '');
+      document.getElementById('draftRoundPill').textContent = `R${round} · P${currentPick+1}/${totalPicks}`;
+      if (draftTimerInterval) clearInterval(draftTimerInterval);
+      let timeLeft = timePerPick;
+      const clockEl = document.getElementById('draftClock'), numEl = document.getElementById('draftTimerNum');
+      numEl.textContent = timeLeft;
+      clockEl.classList.remove('urgent');
+      draftTimerInterval = setInterval(() => {
+        timeLeft--;
+        numEl.textContent = timeLeft;
+        if (timeLeft <= 5) clockEl.classList.add('urgent');
+        if (timeLeft <= 0) { clearInterval(draftTimerInterval); draftTimerInterval = null; }
+      }, 1000);
+    }
+
+    function addDraftLog(pickerName, player, autoPick) {
+      const log = document.getElementById('draftLog');
+      const e = document.createElement('div');
+      e.className = 'log-entry';
+      e.innerHTML = `<span class="picker">${pickerName}</span> ${autoPick?'<span class="auto">auto-</span>':''}drafted <span class="picked">${player.name}</span> (${player.team})`;
+      log.prepend(e);
+    }
+
+    function setFilter(filter, btn) {
+      currentFilter = filter;
+      currentPosFilter = 'all'; // reset pos when switching league
+      document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active','active-nhl'));
+      btn.classList.add(filter === 'nhl' ? 'active-nhl' : 'active');
+      // Rebuild position filters for visible players
+      let visible = availablePlayers;
+      if (filter !== 'all') visible = visible.filter(p => p.league === filter);
+      buildPositionFilters(visible);
+      filterPlayers();
+    }
+    function filterPlayers() { renderPlayerPool(); }
+
+    // Track previous scores for animations
+    let prevScores = {};
+
+    function renderLive(players, state) {
+      const isH2H = players.length === 2;
+
+      if (isH2H) {
+        document.getElementById('matchupView').style.display = 'block';
+        document.getElementById('rankListView').style.display = 'none';
+        renderMatchup(players, state);
+      } else {
+        document.getElementById('matchupView').style.display = 'none';
+        document.getElementById('rankListView').style.display = 'block';
+        renderRankList(players, state);
+      }
+
+      // Store scores for delta animations
+      players.forEach(p => { prevScores[p.id] = p.totalScore || 0; });
+    }
+
+    function renderMatchup(players, state) {
+      // Figure out which is "me" and which is opponent
+      let me = players.find(p => p.id === mySessionId);
+      let opp = players.find(p => p.id !== mySessionId);
+      // If spectating, just use order
+      if (!me) { me = players[0]; opp = players[1]; }
+
+      const myScore = me.totalScore || 0;
+      const oppScore = opp.totalScore || 0;
+      const diff = myScore - oppScore;
+
+      const myState = diff > 0 ? 'leading' : diff < 0 ? 'trailing' : 'tied';
+      const oppState = diff < 0 ? 'leading' : diff > 0 ? 'trailing' : 'tied';
+
+      // Matchup header
+      document.getElementById('mp-left').innerHTML = `
+        <div class="mp-name ${me.id === mySessionId ? 'is-you' : ''}">${me.name}</div>
+        <div class="mp-score ${myState}" id="score-${me.id}">${myScore}</div>
+        <div class="mp-label">PTS</div>`;
+
+      document.getElementById('mp-right').innerHTML = `
+        <div class="mp-name ${opp.id === mySessionId ? 'is-you' : ''}">${opp.name}</div>
+        <div class="mp-score ${oppState}" id="score-${opp.id}">${oppScore}</div>
+        <div class="mp-label">PTS</div>`;
+
+      // Diff pill
+      const diffEl = document.getElementById('matchupDiff');
+      if (diff === 0) {
+        diffEl.innerHTML = `<span class="diff-pill tied-pill">TIED</span>`;
+      } else {
+        const absDiff = Math.abs(diff).toFixed(1);
+        const isWinning = (me.id === mySessionId && diff > 0) || (me.id !== mySessionId && diff > 0);
+        diffEl.innerHTML = `<span class="diff-pill ${isWinning ? 'winning' : 'losing'}">${isWinning ? '+' : '-'}${absDiff}</span>`;
+      }
+
+      // Score pop animation
+      [me, opp].forEach(p => {
+        if (prevScores[p.id] !== undefined && prevScores[p.id] !== (p.totalScore || 0)) {
+          const el = document.getElementById(`score-${p.id}`);
+          if (el) { el.classList.remove('score-changed'); void el.offsetWidth; el.classList.add('score-changed'); }
+        }
+      });
+
+      // Rosters
+      const av = ['avatar-1','avatar-2','avatar-3','avatar-4','avatar-5'];
+      const c = document.getElementById('matchupRosters');
+      c.innerHTML = [me, opp].map((p, idx) => {
+        const isMe = p.id === mySessionId;
+        return `
+          <div class="roster-section">
+            <div class="roster-section-header">
+              <div class="roster-section-left">
+                <div class="roster-section-avatar ${av[idx]}">${p.name.charAt(0).toUpperCase()}</div>
+                <div class="roster-section-name">${p.name}${isMe ? '<span class="you-tag">(you)</span>' : ''}</div>
+              </div>
+              <div class="roster-section-total">${p.totalScore || 0}</div>
+            </div>
+            ${renderRosterCards(p.roster || [], p.id)}
+          </div>`;
+      }).join('');
+    }
+
+    function renderRankList(players, state) {
+      const c = document.getElementById('rankListView');
+      const sorted = [...players].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+      const av = ['avatar-1','avatar-2','avatar-3','avatar-4','avatar-5'];
+
+      c.innerHTML = sorted.map((p, i) => {
+        const rbClass = i === 0 ? 'rb1' : i === 1 ? 'rb2' : i === 2 ? 'rb3' : 'rb4';
+        const isMe = p.id === mySessionId;
+        return `
+          <div class="rank-list-entry ${i === 0 ? 'rank-1-entry' : ''}" onclick="toggleRankExpand('rank-exp-${i}')">
+            <div class="rank-badge ${rbClass}">${i + 1}</div>
+            <div class="rank-info">
+              <div class="rank-pname">${p.name}${isMe ? ' (you)' : ''}</div>
+              <div class="rank-pmeta">${(p.roster || []).length} players</div>
+            </div>
+            <div class="rank-pts">${p.totalScore || 0}</div>
+          </div>
+          <div id="rank-exp-${i}" style="display:none;margin-bottom:10px;">
+            ${renderRosterCards(p.roster || [], p.id)}
+          </div>`;
+      }).join('');
+    }
+
+    function toggleRankExpand(id) {
+      const el = document.getElementById(id);
+      el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    }
+
+    function renderRosterCards(roster, ownerId) {
+      return roster.map((pick, idx) => {
+        const cardId = `rpc-${ownerId}-${idx}`;
+        const statPreview = getStatPreview(pick);
+        const gameStatus = pick.gameStatus || '';
+        const gameClass = gameStatus.includes('LIVE') || gameStatus.includes('In Progress') || gameStatus.includes('Q') || gameStatus.includes('Half')
+          ? 'game-live' : gameStatus.includes('Final') || gameStatus.includes('OFF')
+          ? 'game-final' : 'game-upcoming';
+
+        return `
+          <div class="roster-player-card">
+            <div class="rpc-main" onclick="togglePlayerDetail('${cardId}')">
+              <div class="rpc-league-accent ${pick.league}"></div>
+              ${pick.headshot
+                ? `<img class="rpc-photo" src="${pick.headshot}" onerror="this.outerHTML='<div class=\\'rpc-photo-placeholder\\'>${pick.position}</div>'">`
+                : `<div class="rpc-photo-placeholder">${pick.position}</div>`
+              }
+              <div class="rpc-info">
+                <div class="rpc-name">${pick.name}</div>
+                <div class="rpc-team">${pick.team} · ${pick.position}</div>
+                ${gameStatus ? `<div class="rpc-game-status ${gameClass}">${gameStatus}</div>` : ''}
+              </div>
+              <div class="rpc-score-col">
+                <div class="rpc-fantasy">${pick.fantasyScore || 0}</div>
+                <div class="rpc-stat-preview">${statPreview}</div>
+              </div>
+              <div class="rpc-chevron" id="chev-${cardId}">▼</div>
+            </div>
+            <div class="rpc-details" id="${cardId}">
+              ${renderStatGrid(pick)}
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    function togglePlayerDetail(id) {
+      const el = document.getElementById(id);
+      const chev = document.getElementById('chev-' + id);
+      el.classList.toggle('visible');
+      chev?.classList.toggle('open');
+    }
+
+    function getStatPreview(pick) {
+      const s = pick.stats || {};
+      if (pick.league === 'nba') return `${s.points||0}p/${s.rebounds||0}r/${s.assists||0}a`;
+      if (pick.league === 'nhl') {
+        if (pick.isGoalie) return `${s.saves||0}sv`;
+        return `${s.goals||0}g/${s.assists||0}a`;
+      }
+      return '';
+    }
+
+    function renderStatGrid(pick) {
+      const s = pick.stats || {};
+      let cells = '';
+      let bonuses = [];
+
+      if (pick.league === 'nba') {
+        const stats = [
+          { label: 'PTS', val: s.points||0, mult: 1 },
+          { label: 'REB', val: s.rebounds||0, mult: 1.5 },
+          { label: 'AST', val: s.assists||0, mult: 2 },
+          { label: 'STL', val: s.steals||0, mult: 3 },
+          { label: 'BLK', val: s.blocks||0, mult: 3 },
+        ];
+        cells = stats.map(st => {
+          const pts = (st.val * st.mult);
+          return `<div class="stat-cell">
+            <div class="stat-val ${pts > 0 ? 'has-points' : ''}">${st.val}</div>
+            <div class="stat-label">${st.label}</div>
+            ${pts > 0 ? `<div class="stat-pts">+${pts % 1 === 0 ? pts : pts.toFixed(1)}</div>` : ''}
+          </div>`;
+        }).join('');
+
+        // Check bonuses
+        const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
+        if (cats.length >= 3) bonuses.push('Triple-Double +10');
+        else if (cats.length >= 2) bonuses.push('Double-Double +5');
+      }
+
+      if (pick.league === 'nhl') {
+        if (pick.isGoalie) {
+          const stats = [
+            { label: 'SAVES', val: s.saves||0, mult: 0.5 },
+            { label: 'GA', val: s.goalsAgainst||0, mult: 0 },
+          ];
+          cells = stats.map(st => {
+            const pts = st.val * st.mult;
+            return `<div class="stat-cell">
+              <div class="stat-val ${pts > 0 ? 'has-points' : ''}">${st.val}</div>
+              <div class="stat-label">${st.label}</div>
+              ${pts > 0 ? `<div class="stat-pts">+${pts % 1 === 0 ? pts : pts.toFixed(1)}</div>` : ''}
+            </div>`;
+          }).join('');
+          if ((s.goalsAgainst||0) === 0 && (s.saves||0) > 0) bonuses.push('Shutout +5');
+        } else {
+          const stats = [
+            { label: 'G', val: s.goals||0, mult: 5 },
+            { label: 'A', val: s.assists||0, mult: 3 },
+            { label: 'SOG', val: s.shotsOnGoal||0, mult: 1 },
+            { label: 'BLK', val: s.blockedShots||0, mult: 2 },
+          ];
+          cells = stats.map(st => {
+            const pts = st.val * st.mult;
+            return `<div class="stat-cell">
+              <div class="stat-val ${pts > 0 ? 'has-points' : ''}">${st.val}</div>
+              <div class="stat-label">${st.label}</div>
+              ${pts > 0 ? `<div class="stat-pts">+${pts}</div>` : ''}
+            </div>`;
+          }).join('');
+          if ((s.goals||0) >= 3) bonuses.push('Hat Trick +3');
+        }
+      }
+
+      let bonusHtml = '';
+      if (bonuses.length) {
+        bonusHtml = `<div class="bonus-row">${bonuses.map(b => `<div class="bonus-chip">🌟 ${b}</div>`).join('')}</div>`;
+      }
+
+      return `<div class="stat-grid">${cells}</div>${bonusHtml}`;
+    }
+  </script>
+</body>
+</html>

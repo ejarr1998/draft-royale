@@ -149,19 +149,8 @@ socket.on('rejoinState', (data) => {
     renderPlayerPool();
     showToast('Reconnected to draft!');
   } else if (data.phase === 'live' || data.phase === 'finished') {
-    showScreen('liveScreen');
-    renderLive(data.players, data.phase);
-    if (data.phase === 'finished') {
-      const bar = document.getElementById('liveBar');
-      bar.classList.add('finished');
-      bar.querySelector('.live-pip-label').textContent = 'Final';
-      const sorted = [...data.players].sort((a, b) => b.totalScore - a.totalScore);
-      if (sorted.length) {
-        document.getElementById('winnerBanner').style.display = 'block';
-        document.getElementById('winnerName').textContent = `${sorted[0].name} Wins!`;
-        document.getElementById('winnerScore').textContent = `${sorted[0].totalScore} fantasy points`;
-      }
-    }
+    // Redirect to live.html page
+    window.location.href = `/live.html?lobby=${data.lobby.id}`;
     showToast('Reconnected to game!');
   }
 });
@@ -684,27 +673,15 @@ function renderRecap(players) {
 }
 
 function goToLive() {
-  showScreen('liveScreen');
-  if (pendingLivePlayers) renderLive(pendingLivePlayers, 'live');
+  // Redirect to standalone live.html page
+  window.location.href = `/live.html?lobby=${myLobbyId}`;
 }
 
 socket.on('scoreUpdate', ({ players, state }) => {
-  pendingLivePlayers = players;
-  const activeScreen = document.querySelector('.screen.active');
-  if (activeScreen && activeScreen.id === 'liveScreen') {
-    renderLive(players, state);
-  }
+  // Score updates are handled by live.html now
+  // This handler only needed if user is still on recap screen
   if (state === 'finished') {
     updateActiveGamePhase('finished');
-    const bar = document.getElementById('liveBar');
-    bar.classList.add('finished');
-    bar.querySelector('.live-pip-label').textContent = 'Final';
-    const sorted = [...players].sort((a, b) => b.totalScore - a.totalScore);
-    if (sorted.length) {
-      document.getElementById('winnerBanner').style.display = 'block';
-      document.getElementById('winnerName').textContent = `${sorted[0].name} Wins!`;
-      document.getElementById('winnerScore').textContent = `${sorted[0].totalScore} fantasy points`;
-    }
   }
 });
 
@@ -1139,225 +1116,4 @@ function setFilter(filter, btn) {
 }
 function filterPlayers() { renderPlayerPool(); }
 
-let prevScores = {};
-
-function renderLive(players, state) {
-  const isH2H = players.length === 2;
-
-  if (isH2H) {
-    document.getElementById('matchupView').style.display = 'block';
-    document.getElementById('rankListView').style.display = 'none';
-    renderMatchup(players, state);
-  } else {
-    document.getElementById('matchupView').style.display = 'none';
-    document.getElementById('rankListView').style.display = 'block';
-    renderRankList(players, state);
-  }
-
-  players.forEach(p => { prevScores[p.id] = p.totalScore || 0; });
-}
-
-function renderMatchup(players, state) {
-  let me = players.find(p => p.id === mySessionId);
-  let opp = players.find(p => p.id !== mySessionId);
-  if (!me) { me = players[0]; opp = players[1]; }
-
-  const myScore = me.totalScore || 0;
-  const oppScore = opp.totalScore || 0;
-  const diff = myScore - oppScore;
-
-  const myState = diff > 0 ? 'leading' : diff < 0 ? 'trailing' : 'tied';
-  const oppState = diff < 0 ? 'leading' : diff > 0 ? 'trailing' : 'tied';
-
-  document.getElementById('mp-left').innerHTML = `
-    <div class="mp-name ${me.id === mySessionId ? 'is-you' : ''}">${me.name}</div>
-    <div class="mp-score ${myState}" id="score-${me.id}">${myScore}</div>
-    <div class="mp-label">PTS</div>`;
-
-  document.getElementById('mp-right').innerHTML = `
-    <div class="mp-name ${opp.id === mySessionId ? 'is-you' : ''}">${opp.name}</div>
-    <div class="mp-score ${oppState}" id="score-${opp.id}">${oppScore}</div>
-    <div class="mp-label">PTS</div>`;
-
-  const diffEl = document.getElementById('matchupDiff');
-  if (diff === 0) {
-    diffEl.innerHTML = `<span class="diff-pill tied-pill">TIED</span>`;
-  } else {
-    const absDiff = Math.abs(diff).toFixed(1);
-    const isWinning = (me.id === mySessionId && diff > 0) || (me.id !== mySessionId && diff > 0);
-    diffEl.innerHTML = `<span class="diff-pill ${isWinning ? 'winning' : 'losing'}">${isWinning ? '+' : '-'}${absDiff}</span>`;
-  }
-
-  [me, opp].forEach(p => {
-    if (prevScores[p.id] !== undefined && prevScores[p.id] !== (p.totalScore || 0)) {
-      const el = document.getElementById(`score-${p.id}`);
-      if (el) { el.classList.remove('score-changed'); void el.offsetWidth; el.classList.add('score-changed'); }
-    }
-  });
-
-  const av = ['avatar-1','avatar-2','avatar-3','avatar-4','avatar-5'];
-  const c = document.getElementById('matchupRosters');
-  c.innerHTML = [me, opp].map((p, idx) => {
-    const isMe = p.id === mySessionId;
-    return `
-      <div class="roster-section">
-        <div class="roster-section-header">
-          <div class="roster-section-left">
-            <div class="roster-section-avatar ${av[idx]}">${p.name.charAt(0).toUpperCase()}</div>
-            <div class="roster-section-name">${p.name}${isMe ? '<span class="you-tag">(you)</span>' : ''}</div>
-          </div>
-          <div class="roster-section-total">${p.totalScore || 0}</div>
-        </div>
-        ${renderRosterCards(p.roster || [], p.id)}
-      </div>`;
-  }).join('');
-}
-
-function renderRankList(players, state) {
-  const c = document.getElementById('rankListView');
-  const sorted = [...players].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
-  const av = ['avatar-1','avatar-2','avatar-3','avatar-4','avatar-5'];
-
-  c.innerHTML = sorted.map((p, i) => {
-    const rbClass = i === 0 ? 'rb1' : i === 1 ? 'rb2' : i === 2 ? 'rb3' : 'rb4';
-    const isMe = p.id === mySessionId;
-    return `
-      <div class="rank-list-entry ${i === 0 ? 'rank-1-entry' : ''}" onclick="toggleRankExpand('rank-exp-${i}')">
-        <div class="rank-badge ${rbClass}">${i + 1}</div>
-        <div class="rank-info">
-          <div class="rank-pname">${p.name}${isMe ? ' (you)' : ''}</div>
-          <div class="rank-pmeta">${(p.roster || []).length} players</div>
-        </div>
-        <div class="rank-pts">${p.totalScore || 0}</div>
-      </div>
-      <div id="rank-exp-${i}" style="display:none;margin-bottom:10px;">
-        ${renderRosterCards(p.roster || [], p.id)}
-      </div>`;
-  }).join('');
-}
-
-function toggleRankExpand(id) {
-  const el = document.getElementById(id);
-  el.style.display = el.style.display === 'none' ? 'block' : 'none';
-}
-
-function renderRosterCards(roster, ownerId) {
-  return roster.map((pick, idx) => {
-    const cardId = `rpc-${ownerId}-${idx}`;
-    const statPreview = getStatPreview(pick);
-    const gameStatus = pick.gameStatus || '';
-    const gameClass = gameStatus.includes('LIVE') || gameStatus.includes('In Progress') || gameStatus.includes('Q') || gameStatus.includes('Half')
-      ? 'game-live' : gameStatus.includes('Final') || gameStatus.includes('OFF')
-      ? 'game-final' : 'game-upcoming';
-
-    return `
-      <div class="roster-player-card">
-        <div class="rpc-main" onclick="togglePlayerDetail('${cardId}')">
-          <div class="rpc-league-accent ${pick.league}"></div>
-          ${pick.headshot
-            ? `<img class="rpc-photo" src="${pick.headshot}" onerror="this.outerHTML='<div class=\\'rpc-photo-placeholder\\'>${pick.position}</div>'">`
-            : `<div class="rpc-photo-placeholder">${pick.position}</div>`
-          }
-          <div class="rpc-info">
-            <div class="rpc-name">${pick.name}</div>
-            <div class="rpc-team">${pick.team} · ${pick.position}</div>
-            ${gameStatus ? `<div class="rpc-game-status ${gameClass}">${gameStatus}</div>` : ''}
-          </div>
-          <div class="rpc-score-col">
-            <div class="rpc-fantasy">${pick.fantasyScore || 0}</div>
-            <div class="rpc-stat-preview">${statPreview}</div>
-          </div>
-          <div class="rpc-chevron" id="chev-${cardId}">▼</div>
-        </div>
-        <div class="rpc-details" id="${cardId}">
-          ${renderStatGrid(pick)}
-        </div>
-      </div>`;
-  }).join('');
-}
-
-function togglePlayerDetail(id) {
-  const el = document.getElementById(id);
-  const chev = document.getElementById('chev-' + id);
-  el.classList.toggle('visible');
-  chev?.classList.toggle('open');
-}
-
-function getStatPreview(pick) {
-  const s = pick.stats || {};
-  if (pick.league === 'nba') return `${s.points||0}p/${s.rebounds||0}r/${s.assists||0}a`;
-  if (pick.league === 'nhl') {
-    if (pick.isGoalie) return `${s.saves||0}sv`;
-    return `${s.goals||0}g/${s.assists||0}a`;
-  }
-  return '';
-}
-
-function renderStatGrid(pick) {
-  const s = pick.stats || {};
-  let cells = '';
-  let bonuses = [];
-
-  if (pick.league === 'nba') {
-    const stats = [
-      { label: 'PTS', val: s.points||0, mult: 1 },
-      { label: 'REB', val: s.rebounds||0, mult: 1.5 },
-      { label: 'AST', val: s.assists||0, mult: 2 },
-      { label: 'STL', val: s.steals||0, mult: 3 },
-      { label: 'BLK', val: s.blocks||0, mult: 3 },
-    ];
-    cells = stats.map(st => {
-      const pts = (st.val * st.mult);
-      return `<div class="stat-cell">
-        <div class="stat-val ${pts > 0 ? 'has-points' : ''}">${st.val}</div>
-        <div class="stat-label">${st.label}</div>
-        ${pts > 0 ? `<div class="stat-pts">+${pts % 1 === 0 ? pts : pts.toFixed(1)}</div>` : ''}
-      </div>`;
-    }).join('');
-
-    const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
-    if (cats.length >= 3) bonuses.push('Triple-Double +10');
-    else if (cats.length >= 2) bonuses.push('Double-Double +5');
-  }
-
-  if (pick.league === 'nhl') {
-    if (pick.isGoalie) {
-      const stats = [
-        { label: 'SAVES', val: s.saves||0, mult: 0.5 },
-        { label: 'GA', val: s.goalsAgainst||0, mult: 0 },
-      ];
-      cells = stats.map(st => {
-        const pts = st.val * st.mult;
-        return `<div class="stat-cell">
-          <div class="stat-val ${pts > 0 ? 'has-points' : ''}">${st.val}</div>
-          <div class="stat-label">${st.label}</div>
-          ${pts > 0 ? `<div class="stat-pts">+${pts % 1 === 0 ? pts : pts.toFixed(1)}</div>` : ''}
-        </div>`;
-      }).join('');
-      if ((s.goalsAgainst||0) === 0 && (s.saves||0) > 0) bonuses.push('Shutout +5');
-    } else {
-      const stats = [
-        { label: 'G', val: s.goals||0, mult: 5 },
-        { label: 'A', val: s.assists||0, mult: 3 },
-        { label: 'SOG', val: s.shotsOnGoal||0, mult: 1 },
-        { label: 'BLK', val: s.blockedShots||0, mult: 2 },
-      ];
-      cells = stats.map(st => {
-        const pts = st.val * st.mult;
-        return `<div class="stat-cell">
-          <div class="stat-val ${pts > 0 ? 'has-points' : ''}">${st.val}</div>
-          <div class="stat-label">${st.label}</div>
-          ${pts > 0 ? `<div class="stat-pts">+${pts}</div>` : ''}
-        </div>`;
-      }).join('');
-      if ((s.goals||0) >= 3) bonuses.push('Hat Trick +3');
-    }
-  }
-
-  let bonusHtml = '';
-  if (bonuses.length) {
-    bonusHtml = `<div class="bonus-row">${bonuses.map(b => `<div class="bonus-chip">🌟 ${b}</div>`).join('')}</div>`;
-  }
-
-  return `<div class="stat-grid">${cells}</div>${bonusHtml}`;
-}
+// Old live screen functions removed - now using live.html

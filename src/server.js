@@ -984,7 +984,13 @@ io.on('connection', (socket) => {
         draftOrder: lobby.draftOrder,
         currentPick: lobby.currentPick,
         currentDrafter: lobby.draftOrder[lobby.currentPick],
-        timePerPick: timeRemaining
+        timePerPick: timeRemaining,
+        games: (lobby.games || []).map(g => ({
+          gameId: g.gameId, league: g.league,
+          homeTeam: g.homeTeam, awayTeam: g.awayTeam,
+          homeName: g.homeName, awayName: g.awayName,
+          startTime: g.startTime, state: g.state, status: g.status
+        }))
       });
     } else {
       socket.emit('rejoinState', {
@@ -1098,7 +1104,13 @@ io.on('connection', (socket) => {
       draftOrder: lobby.draftOrder,
       currentPick: 0,
       currentDrafter: lobby.draftOrder[0],
-      timePerPick: timePerPick
+      timePerPick: timePerPick,
+      games: lobby.games.map(g => ({
+        gameId: g.gameId, league: g.league,
+        homeTeam: g.homeTeam, awayTeam: g.awayTeam,
+        homeName: g.homeName, awayName: g.awayName,
+        startTime: g.startTime, state: g.state, status: g.status
+      }))
     });
     
     // Start draft timer

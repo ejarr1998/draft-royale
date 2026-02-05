@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Draft Royale - Daily Fantasy Battles</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- HOME -->
+    <div class="screen active" id="homeScreen">
+      <div id="activeGameBanner" style="display:none;"></div>
+      <div class="hero">
+        <div class="hero-badge">Season Live</div>
+        <h1>DRAFT <span class="accent">ROYALE</span></h1>
+        <div class="hero-sub">Draft players. Talk trash. Win the night.</div>
+        <div class="hero-icons">🏀🏒⚔️</div>
+      </div>
+
+      <div class="home-card">
+        <div class="home-card-title">Get in the Game</div>
+        <input class="input" id="playerName" placeholder="Enter your name" maxlength="20" autocomplete="off">
+        <div style="height: 12px;"></div>
+        <button class="btn btn-hero" onclick="createLobby()">CREATE GAME</button>
+        <div class="or-divider">or join a room</div>
+        <input class="input" id="joinCode" placeholder="Room code" maxlength="6"
+               style="text-transform:uppercase;font-family:'JetBrains Mono',monospace;letter-spacing:8px;text-align:center;margin-bottom:10px;font-size:1.2rem;">
+        <button class="btn btn-glass" onclick="joinLobby()">Join Game</button>
+        <div style="height: 10px;"></div>
+        <button class="btn btn-glass" onclick="findPublicGame()">🔍 Find Public Game</button>
+      </div>
+
+      <div class="games-section">
+        <div class="section-label">📅 Game Slate</div>
+        <div class="date-picker-row" id="datePickerRow"></div>
+        <div class="games-scroll" id="todaysGames">
+          <div style="color:var(--text-dim);font-size:0.85rem;padding:10px;">Loading games...</div>
+        </div>
+      </div>
+
+      <div class="scoring-panel">
+        <button class="scoring-toggle" onclick="toggleScoring(this)">
+          Scoring System <span class="arrow">▼</span>
+        </button>
+        <div class="scoring-body" id="scoringBody">
+          <div class="scoring-cols">
+            <div>
+              <div class="score-col-title nba">🏀 NBA</div>
+              <div class="score-line"><span>Point</span><span class="val">1</span></div>
+              <div class="score-line"><span>Rebound</span><span class="val">1.5</span></div>
+              <div class="score-line"><span>Assist</span><span class="val">2</span></div>
+              <div class="score-line"><span>Steal</span><span class="val">3</span></div>
+              <div class="score-line"><span>Block</span><span class="val">3</span></div>
+              <div class="score-line"><span>Double-Double</span><span class="val">+5</span></div>
+              <div class="score-line"><span>Triple-Double</span><span class="val">+10</span></div>
+            </div>
+            <div>
+              <div class="score-col-title nhl">🏒 NHL</div>
+              <div class="score-line"><span>Goal</span><span class="val">5</span></div>
+              <div class="score-line"><span>Assist</span><span class="val">3</span></div>
+              <div class="score-line"><span>Shot on Goal</span><span class="val">1</span></div>
+              <div class="score-line"><span>Blocked Shot</span><span class="val">2</span></div>
+              <div class="score-line"><span>Save (G)</span><span class="val">0.5</span></div>
+              <div class="score-line"><span>Shutout (G)</span><span class="val">+5</span></div>
+              <div class="score-line"><span>Hat Trick</span><span class="val">+3</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LOBBY -->
+    <div class="screen" id="lobbyScreen">
+      <div class="lobby-top">
+        <div class="lobby-top-label">Room Code</div>
+        <div class="lobby-code-display" id="lobbyCode">------</div>
+        <div class="lobby-code-actions">
+          <button class="copy-btn" onclick="copyLobbyCode()">📋 Copy Code</button>
+          <button class="copy-btn" onclick="shareLobby()">🔗 Share Link</button>
+        </div>
+      </div>
+      <div class="lobby-players-section">
+        <div class="section-label">👥 Players</div>
+        <div id="playerSlots"></div>
+      </div>
+      <div class="lobby-controls" id="hostControls" style="display:none;">
+
+        <div class="settings-section-title">Draft Settings</div>
+
+        <div class="settings-row">
+          <div><label>Game Day</label><div class="settings-desc">Which day's games to draft</div></div>
+          <div class="seg-control" id="gameDateControl"></div>
+        </div>
+
+        <div class="settings-row">
+          <div><label>Leagues</label><div class="settings-desc">Which players to draft from</div></div>
+          <div class="seg-control" id="leagueControl">
+            <button class="seg-btn" onclick="setLeague('nba',this)">🏀 NBA</button>
+            <button class="seg-btn seg-active-both" onclick="setLeague('both',this)">Both</button>
+            <button class="seg-btn" onclick="setLeague('nhl',this)">🏒 NHL</button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div><label>Draft Type</label><div class="settings-desc">How pick order works</div></div>
+          <div class="seg-control" id="draftTypeControl">
+            <button class="seg-btn seg-active" onclick="setDraftType('snake',this)">🐍 Snake</button>
+            <button class="seg-btn" onclick="setDraftType('linear',this)">↓ Linear</button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div><label>Time Per Pick</label></div>
+          <div class="stepper">
+            <button class="stepper-btn" onclick="adjustTime(-5)">−</button>
+            <div><span class="stepper-val" id="timeVal">30</span><span class="stepper-unit">sec</span></div>
+            <button class="stepper-btn" onclick="adjustTime(5)">+</button>
+          </div>
+        </div>
+
+        <div class="settings-row" id="rosterRow">
+          <div><label>Roster</label><div class="settings-desc">Picks per league</div></div>
+          <div id="rosterControls" class="roster-slots-control">
+            <div class="slot-control">
+              <span class="slot-league nba-slot">🏀</span>
+              <button class="stepper-btn" onclick="adjustSlot('nba',-1)">−</button>
+              <span class="stepper-val" id="nbaSlotsVal">4</span>
+              <button class="stepper-btn" onclick="adjustSlot('nba',1)">+</button>
+            </div>
+            <div class="slot-divider">+</div>
+            <div class="slot-control">
+              <span class="slot-league nhl-slot">🏒</span>
+              <button class="stepper-btn" onclick="adjustSlot('nhl',-1)">−</button>
+              <span class="stepper-val" id="nhlSlotsVal">2</span>
+              <button class="stepper-btn" onclick="adjustSlot('nhl',1)">+</button>
+            </div>
+            <div class="slot-divider">=</div>
+            <span class="stepper-val slot-total" id="totalSlotsVal">6</span>
+          </div>
+        </div>
+
+        <div class="settings-section-title">Room</div>
+
+        <div class="settings-row">
+          <div><label>Max Players</label></div>
+          <div class="stepper">
+            <button class="stepper-btn" onclick="adjustMaxPlayers(-1)">−</button>
+            <span class="stepper-val" id="maxPlayersVal">2</span>
+            <button class="stepper-btn" onclick="adjustMaxPlayers(1)">+</button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <label>Public Lobby</label>
+          <div class="toggle-switch" id="publicToggle" onclick="togglePublic()"></div>
+        </div>
+
+        <div class="settings-summary" id="settingsSummary"></div>
+        <div style="height:8px;"></div>
+        <button class="btn btn-hero" onclick="startDraft()">⚔️ START DRAFT</button>
+      </div>
+      <div id="waitingMsg" style="display:none;">
+        <div style="text-align:center;color:var(--text-dim);margin-top:28px;font-weight:500;margin-bottom:12px;">
+          Waiting for host to start...
+        </div>
+        <div class="settings-summary" id="guestSettingsSummary"></div>
+      </div>
+      <div style="height:16px;"></div>
+      <button class="btn btn-glass" onclick="leaveLobby()" style="width:100%;color:var(--text-dim);font-size:0.85rem;">Leave Lobby</button>
+    </div>
+
+    <!-- DRAFT -->
+    <div class="screen" id="draftScreen">
+      <div class="draft-bar">
+        <div class="draft-turn-info">
+          <div class="draft-turn-label">Now Picking</div>
+          <div class="draft-turn-name" id="draftTurnName">---</div>
+        </div>
+        <div class="draft-round-pill" id="draftRoundPill">R1 P1</div>
+        <div class="draft-clock" id="draftClock">
+          <div class="draft-clock-num" id="draftTimerNum">30</div>
+          <div class="draft-clock-label">sec</div>
+        </div>
+      </div>
+      <div class="roster-strip" id="draftRosters"></div>
+      <div id="waitingBanner" class="waiting-banner" style="display:none;">⏳ Waiting for pick...</div>
+      <div class="draft-games-bar" id="draftGamesBar" style="display:none;">
+        <div class="draft-games-label">🎮 Filter by Game</div>
+        <div class="draft-games-scroll" id="draftGamesScroll"></div>
+      </div>
+      <div id="draftPool">
+        <div class="pool-header">
+          <div class="search-row">
+            <input class="search-input" id="playerSearch" placeholder="Search player or team..." oninput="filterPlayers()">
+          </div>
+          <div class="filter-row" id="leagueFilterRow">
+            <button class="filter-chip active" data-filter="all" id="filterAll" onclick="setFilter('all',this)">All</button>
+            <button class="filter-chip" data-filter="nba" id="filterNba" onclick="setFilter('nba',this)">🏀 NBA</button>
+            <button class="filter-chip" data-filter="nhl" id="filterNhl" onclick="setFilter('nhl',this)">🏒 NHL</button>
+          </div>
+          <div class="filter-row" id="positionFilters">
+            <button class="filter-chip active-pos" data-pos="all" onclick="setPosFilter('all',this)">All Pos</button>
+          </div>
+        </div>
+        <div class="slot-indicator-row" id="slotIndicator"></div>
+        <div class="player-pool-grid" id="playerPool"></div>
+      </div>
+      <div class="draft-log" id="draftLog"></div>
+    </div>
+
+    <!-- Player Detail Modal -->
+    <div class="modal-overlay" id="playerModal" onclick="if(event.target===this)closeModal()">
+      <div class="modal-sheet" id="modalSheet">
+        <div class="modal-handle" onclick="closeModal()"></div>
+        <button class="modal-close-btn" onclick="closeModal()" aria-label="Close">✕</button>
+        <div class="modal-player-header" id="modalHeader"></div>
+        <div class="modal-section" id="modalAvgs">
+          <div class="modal-section-title">Season Averages</div>
+          <div class="modal-avg-grid" id="modalAvgGrid"></div>
+        </div>
+        <div class="modal-section" id="modalGameLog">
+          <div class="modal-section-title">Last 3 Games</div>
+          <div id="modalGameLogBody"><div class="modal-loading">Loading game log...</div></div>
+        </div>
+        <div class="modal-draft-bar" id="modalDraftBar"></div>
+      </div>
+    </div>
+
+    <!-- DRAFT RECAP -->
+    <div class="screen" id="recapScreen">
+      <div class="recap-header">
+        <div class="recap-title">Draft Complete ✅</div>
+        <div class="recap-subtitle">Here's how it went down</div>
+      </div>
+      <div id="recapBody" class="recap-body"></div>
+      <div class="recap-footer">
+        <button class="btn btn-hero" onclick="goToLive()">🔴 Go Live</button>
+      </div>
+    </div>
+
+    <!-- LIVE -->
+    <div class="screen" id="liveScreen">
+      <div class="live-pip-bar" id="liveBar">
+        <div class="live-pip"></div>
+        <div class="live-pip-label">Live</div>
+      </div>
+
+      <div id="winnerBanner" style="display:none;">
+        <div class="winner-card">
+          <div class="winner-trophy">🏆</div>
+          <div class="winner-title" id="winnerName">Winner!</div>
+          <div class="winner-subtitle" id="winnerScore"></div>
+        </div>
+      </div>
+
+      <!-- Head-to-head matchup (2 players) -->
+      <div id="matchupView" style="display:none;">
+        <div class="matchup-header">
+          <div class="matchup-scores">
+            <div class="matchup-player" id="mp-left"></div>
+            <div class="matchup-vs">VS</div>
+            <div class="matchup-player" id="mp-right"></div>
+          </div>
+          <div class="matchup-diff" id="matchupDiff"></div>
+        </div>
+
+        <div id="matchupRosters"></div>
+      </div>
+
+      <!-- 3+ players ranked list -->
+      <div id="rankListView" style="display:none;"></div>
+
+      <div style="height:12px;"></div>
+      <button class="btn btn-glass" onclick="goHome()" style="width:100%;">← Back to Home</button>
+      <div style="height:8px;"></div>
+      <button class="btn btn-glass" onclick="leaveGame()" style="width:100%;color:var(--red);border-color:rgba(255,61,90,0.2);font-size:0.85rem;">Leave Game Permanently</button>
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

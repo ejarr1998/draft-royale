@@ -331,38 +331,64 @@ async function enrichNBAPlayerAverages(players) {
   // Use ESPN athlete endpoint for season stats
   const enrichPromises = players.filter(p => p.league === 'nba').map(async (player) => {
     try {
-      const res = await fetch(`https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${player.athleteId}/stats`);
+      const res = await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${player.athleteId}/stats`);
       const data = await res.json();
       
-      // Look for current season splits/averages
+      // ESPN v3 stats endpoint returns categories like:
+      // { name: "averages", labels: ["GP","GS","MIN",...,"REB","AST","BLK","STL",...,"PTS"],
+      //   statistics: [ { season: {year:2025}, stats: ["55","55","33.1",...] }, ... ] }
+      // We need the most recent season's stats from the "averages" category.
       const categories = data.categories || [];
-      for (const cat of categories) {
-        if (cat.type === 'perGame' || cat.name === 'perGame') {
-          const labels = cat.labels || cat.names || [];
-          const vals = cat.stats || cat.values || cat.totals || [];
-          const idx = (name) => labels.indexOf(name);
-          player.seasonAvg = {
-            points: parseFloat(vals[idx('PTS')]) || parseFloat(vals[idx('avgPoints')]) || 0,
-            rebounds: parseFloat(vals[idx('REB')]) || parseFloat(vals[idx('avgRebounds')]) || 0,
-            assists: parseFloat(vals[idx('AST')]) || parseFloat(vals[idx('avgAssists')]) || 0,
-            steals: parseFloat(vals[idx('STL')]) || parseFloat(vals[idx('avgSteals')]) || 0,
-            blocks: parseFloat(vals[idx('BLK')]) || parseFloat(vals[idx('avgBlocks')]) || 0
-          };
-          break;
+      const avgCat = categories.find(c => c.name === 'averages' || c.displayName?.includes('Average'));
+      
+      if (avgCat && avgCat.labels && avgCat.statistics && avgCat.statistics.length > 0) {
+        const labels = avgCat.labels;
+        // Get the most recent season (last entry in statistics array)
+        const latestSeason = avgCat.statistics[avgCat.statistics.length - 1];
+        const vals = latestSeason.stats || [];
+        
+        const idx = (name) => labels.indexOf(name);
+        player.seasonAvg = {
+          points: parseFloat(vals[idx('PTS')]) || 0,
+          rebounds: parseFloat(vals[idx('REB')]) || 0,
+          assists: parseFloat(vals[idx('AST')]) || 0,
+          steals: parseFloat(vals[idx('STL')]) || 0,
+          blocks: parseFloat(vals[idx('BLK')]) || 0
+        };
+      }
+      
+      // Fallback: try the older perGame category format (in case ESPN changes format)
+      if (player.seasonAvg.points === 0) {
+        for (const cat of categories) {
+          if (cat.type === 'perGame' || cat.name === 'perGame') {
+            const labels = cat.labels || cat.names || [];
+            const vals = cat.stats || cat.values || cat.totals || [];
+            const idx = (name) => labels.indexOf(name);
+            player.seasonAvg = {
+              points: parseFloat(vals[idx('PTS')]) || 0,
+              rebounds: parseFloat(vals[idx('REB')]) || 0,
+              assists: parseFloat(vals[idx('AST')]) || 0,
+              steals: parseFloat(vals[idx('STL')]) || 0,
+              blocks: parseFloat(vals[idx('BLK')]) || 0
+            };
+            if (player.seasonAvg.points > 0) break;
+          }
         }
       }
       
       // Fallback: check splits
-      const splits = data.splits || {};
-      const perGame = splits.categories?.find(c => c.name === 'general' || c.type === 'perGame');
-      if (perGame && player.seasonAvg.points === 0) {
-        const stats = perGame.stats || [];
-        for (const s of stats) {
-          if (s.name === 'avgPoints' || s.abbreviation === 'PTS') player.seasonAvg.points = parseFloat(s.value) || 0;
-          if (s.name === 'avgRebounds' || s.abbreviation === 'REB') player.seasonAvg.rebounds = parseFloat(s.value) || 0;
-          if (s.name === 'avgAssists' || s.abbreviation === 'AST') player.seasonAvg.assists = parseFloat(s.value) || 0;
-          if (s.name === 'avgSteals' || s.abbreviation === 'STL') player.seasonAvg.steals = parseFloat(s.value) || 0;
-          if (s.name === 'avgBlocks' || s.abbreviation === 'BLK') player.seasonAvg.blocks = parseFloat(s.value) || 0;
+      if (player.seasonAvg.points === 0) {
+        const splits = data.splits || {};
+        const perGame = splits.categories?.find(c => c.name === 'general' || c.type === 'perGame');
+        if (perGame) {
+          const stats = perGame.stats || [];
+          for (const s of stats) {
+            if (s.name === 'avgPoints' || s.abbreviation === 'PTS') player.seasonAvg.points = parseFloat(s.value) || 0;
+            if (s.name === 'avgRebounds' || s.abbreviation === 'REB') player.seasonAvg.rebounds = parseFloat(s.value) || 0;
+            if (s.name === 'avgAssists' || s.abbreviation === 'AST') player.seasonAvg.assists = parseFloat(s.value) || 0;
+            if (s.name === 'avgSteals' || s.abbreviation === 'STL') player.seasonAvg.steals = parseFloat(s.value) || 0;
+            if (s.name === 'avgBlocks' || s.abbreviation === 'BLK') player.seasonAvg.blocks = parseFloat(s.value) || 0;
+          }
         }
       }
       

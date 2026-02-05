@@ -343,84 +343,90 @@ async function fetchNHLPlayersForGames(games) {
 
 // Fetch season averages for NBA players in bulk (one call per athlete)
 async function enrichNBAPlayerAverages(players) {
-  // Use ESPN athlete endpoint for season stats
-  const enrichPromises = players.filter(p => p.league === 'nba').map(async (player) => {
-    try {
-      const res = await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${player.athleteId}/stats`);
-      const data = await res.json();
-      
-      // ESPN v3 stats endpoint returns categories like:
-      // { name: "averages", labels: ["GP","GS","MIN",...,"REB","AST","BLK","STL",...,"PTS"],
-      //   statistics: [ { season: {year:2025}, stats: ["55","55","33.1",...] }, ... ] }
-      // We need the most recent season's stats from the "averages" category.
-      const categories = data.categories || [];
-      const avgCat = categories.find(c => c.name === 'averages' || c.displayName?.includes('Average'));
-      
-      if (avgCat && avgCat.labels && avgCat.statistics && avgCat.statistics.length > 0) {
-        const labels = avgCat.labels;
-        // Get the most recent season (last entry in statistics array)
-        const latestSeason = avgCat.statistics[avgCat.statistics.length - 1];
-        const vals = latestSeason.stats || [];
-        
-        const idx = (name) => labels.indexOf(name);
-        player.seasonAvg = {
-          points: parseFloat(vals[idx('PTS')]) || 0,
-          rebounds: parseFloat(vals[idx('REB')]) || 0,
-          assists: parseFloat(vals[idx('AST')]) || 0,
-          steals: parseFloat(vals[idx('STL')]) || 0,
-          blocks: parseFloat(vals[idx('BLK')]) || 0
-        };
-      }
-      
-      // Fallback: try the older perGame category format (in case ESPN changes format)
-      if (player.seasonAvg.points === 0) {
-        for (const cat of categories) {
-          if (cat.type === 'perGame' || cat.name === 'perGame') {
-            const labels = cat.labels || cat.names || [];
-            const vals = cat.stats || cat.values || cat.totals || [];
-            const idx = (name) => labels.indexOf(name);
-            player.seasonAvg = {
-              points: parseFloat(vals[idx('PTS')]) || 0,
-              rebounds: parseFloat(vals[idx('REB')]) || 0,
-              assists: parseFloat(vals[idx('AST')]) || 0,
-              steals: parseFloat(vals[idx('STL')]) || 0,
-              blocks: parseFloat(vals[idx('BLK')]) || 0
-            };
-            if (player.seasonAvg.points > 0) break;
-          }
-        }
-      }
-      
-      // Fallback: check splits
-      if (player.seasonAvg.points === 0) {
-        const splits = data.splits || {};
-        const perGame = splits.categories?.find(c => c.name === 'general' || c.type === 'perGame');
-        if (perGame) {
-          const stats = perGame.stats || [];
-          for (const s of stats) {
-            if (s.name === 'avgPoints' || s.abbreviation === 'PTS') player.seasonAvg.points = parseFloat(s.value) || 0;
-            if (s.name === 'avgRebounds' || s.abbreviation === 'REB') player.seasonAvg.rebounds = parseFloat(s.value) || 0;
-            if (s.name === 'avgAssists' || s.abbreviation === 'AST') player.seasonAvg.assists = parseFloat(s.value) || 0;
-            if (s.name === 'avgSteals' || s.abbreviation === 'STL') player.seasonAvg.steals = parseFloat(s.value) || 0;
-            if (s.name === 'avgBlocks' || s.abbreviation === 'BLK') player.seasonAvg.blocks = parseFloat(s.value) || 0;
-          }
-        }
-      }
-      
-      // Recalculate projection
-      const a = player.seasonAvg;
-      player.projectedScore = Math.round(((a.points * SCORING.nba.points) + (a.rebounds * SCORING.nba.rebounds) +
-        (a.assists * SCORING.nba.assists) + (a.steals * SCORING.nba.steals) + (a.blocks * SCORING.nba.blocks)) * 10) / 10;
-    } catch (e) {
-      // Silently fail - player keeps default 0 projections
-    }
-  });
+  const nbaPlayers = players.filter(p => p.league === 'nba');
   
-  // Run in batches of 10 with a delay to avoid rate limits
-  for (let i = 0; i < enrichPromises.length; i += 10) {
-    await Promise.all(enrichPromises.slice(i, i + 10));
-    if (i + 10 < enrichPromises.length) {
-      await new Promise(r => setTimeout(r, 300)); // 300ms between batches
+  // Process in true sequential batches
+  const BATCH_SIZE = 10;
+  const BATCH_DELAY = 300;
+  
+  for (let i = 0; i < nbaPlayers.length; i += BATCH_SIZE) {
+    const batch = nbaPlayers.slice(i, i + BATCH_SIZE);
+    
+    await Promise.all(batch.map(async (player) => {
+      try {
+        const res = await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${player.athleteId}/stats`);
+        const data = await res.json();
+        
+        // ESPN v3 stats endpoint returns categories like:
+        // { name: "averages", labels: ["GP","GS","MIN",...,"REB","AST","BLK","STL",...,"PTS"],
+        //   statistics: [ { season: {year:2025}, stats: ["55","55","33.1",...] }, ... ] }
+        // We need the most recent season's stats from the "averages" category.
+        const categories = data.categories || [];
+        const avgCat = categories.find(c => c.name === 'averages' || c.displayName?.includes('Average'));
+        
+        if (avgCat && avgCat.labels && avgCat.statistics && avgCat.statistics.length > 0) {
+          const labels = avgCat.labels;
+          // Get the most recent season (last entry in statistics array)
+          const latestSeason = avgCat.statistics[avgCat.statistics.length - 1];
+          const vals = latestSeason.stats || [];
+          
+          const idx = (name) => labels.indexOf(name);
+          player.seasonAvg = {
+            points: parseFloat(vals[idx('PTS')]) || 0,
+            rebounds: parseFloat(vals[idx('REB')]) || 0,
+            assists: parseFloat(vals[idx('AST')]) || 0,
+            steals: parseFloat(vals[idx('STL')]) || 0,
+            blocks: parseFloat(vals[idx('BLK')]) || 0
+          };
+        }
+        
+        // Fallback: try the older perGame category format (in case ESPN changes format)
+        if (player.seasonAvg.points === 0) {
+          for (const cat of categories) {
+            if (cat.type === 'perGame' || cat.name === 'perGame') {
+              const labels = cat.labels || cat.names || [];
+              const vals = cat.stats || cat.values || cat.totals || [];
+              const idx = (name) => labels.indexOf(name);
+              player.seasonAvg = {
+                points: parseFloat(vals[idx('PTS')]) || 0,
+                rebounds: parseFloat(vals[idx('REB')]) || 0,
+                assists: parseFloat(vals[idx('AST')]) || 0,
+                steals: parseFloat(vals[idx('STL')]) || 0,
+                blocks: parseFloat(vals[idx('BLK')]) || 0
+              };
+              if (player.seasonAvg.points > 0) break;
+            }
+          }
+        }
+        
+        // Fallback: check splits
+        if (player.seasonAvg.points === 0) {
+          const splits = data.splits || {};
+          const perGame = splits.categories?.find(c => c.name === 'general' || c.type === 'perGame');
+          if (perGame) {
+            const stats = perGame.stats || [];
+            for (const s of stats) {
+              if (s.name === 'avgPoints' || s.abbreviation === 'PTS') player.seasonAvg.points = parseFloat(s.value) || 0;
+              if (s.name === 'avgRebounds' || s.abbreviation === 'REB') player.seasonAvg.rebounds = parseFloat(s.value) || 0;
+              if (s.name === 'avgAssists' || s.abbreviation === 'AST') player.seasonAvg.assists = parseFloat(s.value) || 0;
+              if (s.name === 'avgSteals' || s.abbreviation === 'STL') player.seasonAvg.steals = parseFloat(s.value) || 0;
+              if (s.name === 'avgBlocks' || s.abbreviation === 'BLK') player.seasonAvg.blocks = parseFloat(s.value) || 0;
+            }
+          }
+        }
+        
+        // Recalculate projection
+        const a = player.seasonAvg;
+        player.projectedScore = Math.round(((a.points * SCORING.nba.points) + (a.rebounds * SCORING.nba.rebounds) +
+          (a.assists * SCORING.nba.assists) + (a.steals * SCORING.nba.steals) + (a.blocks * SCORING.nba.blocks)) * 10) / 10;
+      } catch (e) {
+        // Silently fail - player keeps default 0 projections
+      }
+    }));
+    
+    // Wait between batches
+    if (i + BATCH_SIZE < nbaPlayers.length) {
+      await new Promise(r => setTimeout(r, BATCH_DELAY));
     }
   }
 }
@@ -429,43 +435,61 @@ async function enrichNBAPlayerAverages(players) {
 async function enrichNHLPlayerAverages(players) {
   const nhlPlayers = players.filter(p => p.league === 'nhl');
   
-  const enrichPromises = nhlPlayers.map(async (player) => {
-    try {
-      const res = await fetch(`https://api-web.nhle.com/v1/player/${player.athleteId}/landing`);
-      if (!res.ok) return; // skip if API returns error
-      const data = await res.json();
-      
-      // Get current season stats from featuredStats
-      const reg = data.featuredStats?.regularSeason?.subSeason;
-      if (reg) {
-        const gp = reg.gamesPlayed || 1;
-        if (player.isGoalie) {
-          player.seasonAvg = {
-            saves: Math.round((reg.saves || 0) / gp * 10) / 10,
-            goalsAgainst: Math.round((reg.goalsAgainst || 0) / gp * 10) / 10
-          };
-          player.projectedScore = Math.round(((player.seasonAvg.saves * SCORING.nhl.saves)) * 10) / 10;
-        } else {
-          player.seasonAvg = {
-            goals: Math.round((reg.goals || 0) / gp * 10) / 10,
-            assists: Math.round((reg.assists || 0) / gp * 10) / 10,
-            shotsOnGoal: Math.round((reg.shots || 0) / gp * 10) / 10,
-            blockedShots: 0  // NHL API doesn't always include this in featured stats
-          };
-          const a = player.seasonAvg;
-          player.projectedScore = Math.round(((a.goals * SCORING.nhl.goals) + (a.assists * SCORING.nhl.assists) +
-            (a.shotsOnGoal * SCORING.nhl.shotsOnGoal)) * 10) / 10;
+  // Process in true sequential batches to avoid NHL API rate limits
+  const BATCH_SIZE = 8;
+  const BATCH_DELAY = 500; // ms between batches
+  
+  for (let i = 0; i < nhlPlayers.length; i += BATCH_SIZE) {
+    const batch = nhlPlayers.slice(i, i + BATCH_SIZE);
+    
+    await Promise.all(batch.map(async (player) => {
+      // Try up to 2 times per player
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await fetch(`https://api-web.nhle.com/v1/player/${player.athleteId}/landing`);
+          if (res.status === 429) {
+            // Rate limited — wait and retry
+            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+            continue;
+          }
+          if (!res.ok) break; // skip non-rate-limit errors
+          const data = await res.json();
+          
+          // Get current season stats from featuredStats
+          const reg = data.featuredStats?.regularSeason?.subSeason;
+          if (reg) {
+            const gp = reg.gamesPlayed || 1;
+            if (player.isGoalie) {
+              player.seasonAvg = {
+                saves: Math.round((reg.saves || 0) / gp * 10) / 10,
+                goalsAgainst: Math.round((reg.goalsAgainst || 0) / gp * 10) / 10
+              };
+              player.projectedScore = Math.round(((player.seasonAvg.saves * SCORING.nhl.saves)) * 10) / 10;
+            } else {
+              player.seasonAvg = {
+                goals: Math.round((reg.goals || 0) / gp * 10) / 10,
+                assists: Math.round((reg.assists || 0) / gp * 10) / 10,
+                shotsOnGoal: Math.round((reg.shots || 0) / gp * 10) / 10,
+                blockedShots: 0  // NHL API doesn't always include this in featured stats
+              };
+              const a = player.seasonAvg;
+              player.projectedScore = Math.round(((a.goals * SCORING.nhl.goals) + (a.assists * SCORING.nhl.assists) +
+                (a.shotsOnGoal * SCORING.nhl.shotsOnGoal)) * 10) / 10;
+            }
+          }
+          break; // success, no more retries
+        } catch (e) {
+          if (attempt === 0) {
+            await new Promise(r => setTimeout(r, 500));
+          }
+          // Silently fail on final attempt
         }
       }
-    } catch (e) {
-      // Silently fail
-    }
-  });
-  
-  for (let i = 0; i < enrichPromises.length; i += 10) {
-    await Promise.all(enrichPromises.slice(i, i + 10));
-    if (i + 10 < enrichPromises.length) {
-      await new Promise(r => setTimeout(r, 300));
+    }));
+    
+    // Wait between batches to respect rate limits
+    if (i + BATCH_SIZE < nhlPlayers.length) {
+      await new Promise(r => setTimeout(r, BATCH_DELAY));
     }
   }
 }
@@ -1201,12 +1225,16 @@ io.on('connection', (socket) => {
     const lobby = lobbies[socket.lobbyId];
     if (!lobby) return;
     if (socket.sessionId !== lobby.host) return;
+    if (lobby.state === 'drafting') return; // prevent double-start
     if (lobby.players.length < 1) {
       return socket.emit('error', { message: 'Need at least 1 player' });
     }
     
     lobby.state = 'drafting';
     const { draftType, timePerPick, leagues, gameDate } = lobby.settings;
+    
+    // Notify all clients that draft is loading
+    io.to(lobby.id).emit('draftLoading', { message: 'Fetching games & players...' });
     
     // Fetch games for the target date based on league setting
     const fetchNBA = leagues === 'nba' || leagues === 'both';
@@ -1231,7 +1259,8 @@ io.on('connection', (socket) => {
     if (upcomingNBA.length === 0 && upcomingNHL.length === 0) {
       lobby.state = 'waiting';
       const leagueStr = leagues === 'both' ? 'NBA or NHL' : leagues.toUpperCase();
-      const dateLabel = isFutureDate ? ` on ${new Date(gameDate).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
+      const dateLabel = isFutureDate ? ` on ${new Date(gameDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
+      io.to(lobby.id).emit('draftLoadingDone');
       return socket.emit('error', { message: `No ${leagueStr} games found${dateLabel}!` });
     }
     
@@ -1244,10 +1273,12 @@ io.on('connection', (socket) => {
     
     if (lobby.availablePlayers.length === 0) {
       lobby.state = 'waiting';
+      io.to(lobby.id).emit('draftLoadingDone');
       return socket.emit('error', { message: 'No players available to draft. Try again when there are upcoming games.' });
     }
     
-    // Enrich players with season averages (runs in parallel batches)
+    // Enrich players with season averages (runs in sequential batches)
+    io.to(lobby.id).emit('draftLoading', { message: `Loading stats for ${nbaPlayers.length + nhlPlayers.length} players...` });
     console.log(`Enriching ${nbaPlayers.length} NBA + ${nhlPlayers.length} NHL players with season stats...`);
     await Promise.all([
       nbaPlayers.length > 0 ? enrichNBAPlayerAverages(lobby.availablePlayers) : Promise.resolve(),

@@ -461,10 +461,13 @@ function showWinnerBanner(players) {
 // Navigation
 function goHome() {
   console.log('🏠 Going home from live screen');
-  console.log('Redirecting to index.html...');
   
-  // Force fresh load of index.html, bypass cache
-  window.location.replace('/index.html');
+  // Navigate to root with cache-busting parameter
+  const timestamp = Date.now();
+  const homeUrl = `/?t=${timestamp}`;
+  
+  console.log('Navigating to:', homeUrl);
+  window.location.href = homeUrl;
 }
 
 function leaveGame() {

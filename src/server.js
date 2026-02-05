@@ -1430,6 +1430,41 @@ async function warmupCache() {
 }
 
 // ============================================
+// PERSONALIZED PLAYER POOL
+// ============================================
+// Filters out players from leagues where the drafter's roster is full
+function sendPersonalizedPlayerPool(lobby, drafterId) {
+  const drafter = lobby.players.find(p => p.id === drafterId);
+  if (!drafter) return;
+  
+  const session = sessions[drafterId];
+  if (!session || !session.socketId) return;
+  
+  const slots = lobby.settings.rosterSlots || { nba: 10, nhl: 10 };
+  const nbaCount = (drafter.roster || []).filter(r => r.league === 'nba').length;
+  const nhlCount = (drafter.roster || []).filter(r => r.league === 'nhl').length;
+  
+  const nbaFull = nbaCount >= (slots.nba || 0);
+  const nhlFull = nhlCount >= (slots.nhl || 0);
+  
+  // Filter out players from full leagues
+  let filteredPlayers = lobby.availablePlayers;
+  if (nbaFull || nhlFull) {
+    filteredPlayers = lobby.availablePlayers.filter(p => {
+      if (p.league === 'nba' && nbaFull) return false;
+      if (p.league === 'nhl' && nhlFull) return false;
+      return true;
+    });
+  }
+  
+  // Send personalized pool to this specific drafter
+  io.to(session.socketId).emit('personalizedPlayerPool', {
+    availablePlayers: filteredPlayers,
+    fullLeagues: { nba: nbaFull, nhl: nhlFull }
+  });
+}
+
+// ============================================
 // SOCKET.IO - REAL-TIME COMMUNICATION
 // ============================================
 function sanitizeName(name) {
@@ -1600,6 +1635,9 @@ io.on('connection', (socket) => {
             startTime: g.startTime, state: g.state, status: g.status
           }))
       });
+      
+      // Send personalized pool if it's their turn or will be soon
+      sendPersonalizedPlayerPool(lobby, sessionId);
     } else {
       socket.emit('rejoinState', {
         phase: lobby.state,
@@ -1686,6 +1724,9 @@ io.on('connection', (socket) => {
         }))
     });
     
+    // Send personalized pool to the first drafter
+    sendPersonalizedPlayerPool(lobby, lobby.draftOrder[0]);
+    
     startDraftTimer(lobby);
     console.log(`Draft started in lobby ${lobby.id}`);
   });
@@ -1738,11 +1779,17 @@ io.on('connection', (socket) => {
     if (lobby.currentPick >= lobby.draftOrder.length) {
       endDraft(lobby);
     } else {
+      const nextDrafterId = lobby.draftOrder[lobby.currentPick];
+      
       io.to(lobby.id).emit('nextPick', {
         currentPick: lobby.currentPick,
-        currentDrafter: lobby.draftOrder[lobby.currentPick],
+        currentDrafter: nextDrafterId,
         timePerPick: lobby.settings.timePerPick
       });
+      
+      // Send personalized player pool to the next drafter
+      sendPersonalizedPlayerPool(lobby, nextDrafterId);
+      
       startDraftTimer(lobby);
     }
   });

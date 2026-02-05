@@ -884,46 +884,72 @@ body {
 /* Mobile H2H Optimization */
 @media (max-width: 767px) {
   .h2h-scoreboard {
-    gap: 8px;
-    padding: 0 4px;
+    gap: 4px;
+    padding: 0 2px;
   }
   
   .h2h-team {
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
     flex: 1;
+    max-width: 45%; /* Prevent overflow */
   }
   
   .h2h-avatar {
-    width: 44px;
-    height: 44px;
-    font-size: 1.125rem;
+    width: 36px;
+    height: 36px;
+    font-size: 1rem;
+    flex-shrink: 0;
   }
   
   .h2h-info {
     flex: 1;
     min-width: 0;
+    overflow: hidden;
   }
   
   .h2h-name {
-    font-size: 0.75rem;
+    font-size: 0.625rem; /* Smaller: 10px */
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
   }
   
   .h2h-score {
-    font-size: 1.5rem;
+    font-size: 1.25rem; /* Smaller: 20px */
+    line-height: 1;
   }
   
   .h2h-vs {
     flex-shrink: 0;
+    padding: 0 4px;
   }
   
   .h2h-vs-text {
-    font-size: 0.75rem;
+    font-size: 0.625rem; /* Smaller: 10px */
   }
   
   .h2h-diff {
+    font-size: 0.625rem; /* Smaller: 10px */
+    padding: 2px 6px;
+    white-space: nowrap;
+  }
+  
+  /* Compact top bar */
+  .live-top-bar {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+  
+  .live-status-text {
     font-size: 0.75rem;
-    padding: 4px 8px;
+  }
+  
+  .btn-text-danger {
+    font-size: 0.75rem;
+    padding: 6px 10px;
   }
 }
 

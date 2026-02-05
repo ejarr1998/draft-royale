@@ -1,5 +1,7 @@
 const express = require('express');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
 
@@ -40,37 +42,61 @@ const SCORING = {
 };
 
 // ============================================
-// GLOBAL CACHES
+// GLOBAL CACHES  (disk-backed for restart survival)
 // ============================================
+//
+// Strategy: the slow-to-build caches (player season stats, rosters) are
+// written to a JSON file every few minutes and reloaded on startup.
+// Fast-changing caches (boxscores, schedules) are NOT persisted — they'd
+// be stale after a restart anyway.
+//
+// On Railway, the filesystem survives process restarts within the same
+// deployment.  For persistence across *deploys*, mount a Railway Volume
+// at the CACHE_DIR path.
 
+const CACHE_DIR = process.env.CACHE_DIR || path.join(__dirname, '..', '.cache');
+const CACHE_FILE = path.join(CACHE_DIR, 'player-cache.json');
+const CACHE_PERSIST_INTERVAL = 3 * 60 * 1000; // write to disk every 3 min
+const CACHE_PERSIST_VERSION = 2; // bump if cache schema changes
+
+// --- Persistent caches (survive restart) ---
 // NHL player stats cache — avoids re-fetching landing pages during enrichment
-// Key: athleteId -> { data, timestamp }
 const nhlPlayerStatsCache = new Map();
-const NHL_STATS_CACHE_TTL = 30 * 60 * 1000; // 30 minutes (season avgs don't change mid-game)
+const NHL_STATS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours — season avgs barely change intraday
 
 // NBA player stats cache
 const nbaPlayerStatsCache = new Map();
-const NBA_STATS_CACHE_TTL = 30 * 60 * 1000;
-
-// Schedule cache — avoids re-fetching the same day's schedule
-const scheduleCache = new Map();
-const SCHEDULE_CACHE_TTL = 2 * 60 * 1000; // 2 minutes for schedule (games can start)
-
-// Game log cache — avoids redundant API calls when opening the same player modal
-const gameLogCache = new Map();
-const GAMELOG_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
-
-// Live boxscore cache — avoids hammering APIs during score updates
-const boxscoreCache = new Map();
-const BOXSCORE_CACHE_TTL = 25 * 1000; // 25 seconds (just under the 30s poll interval)
+const NBA_STATS_CACHE_TTL = 4 * 60 * 60 * 1000;
 
 // NHL roster cache — team rosters don't change during a session
 const nhlRosterCache = new Map();
-const NHL_ROSTER_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const NHL_ROSTER_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
 
 // NBA roster cache
 const nbaRosterCache = new Map();
-const NBA_ROSTER_CACHE_TTL = 60 * 60 * 1000;
+const NBA_ROSTER_CACHE_TTL = 6 * 60 * 60 * 1000;
+
+// Game log cache — avoids redundant API calls when opening the same player modal
+const gameLogCache = new Map();
+const GAMELOG_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+// --- Ephemeral caches (NOT persisted — too short-lived) ---
+// Schedule cache — avoids re-fetching the same day's schedule
+const scheduleCache = new Map();
+const SCHEDULE_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+
+// Live boxscore cache — avoids hammering APIs during score updates
+const boxscoreCache = new Map();
+const BOXSCORE_CACHE_TTL = 25 * 1000; // 25 seconds
+
+// Registry of which caches to persist (name -> { cache, ttl })
+const PERSISTENT_CACHES = {
+  nhlPlayerStats:  { cache: nhlPlayerStatsCache, ttl: NHL_STATS_CACHE_TTL },
+  nbaPlayerStats:  { cache: nbaPlayerStatsCache, ttl: NBA_STATS_CACHE_TTL },
+  nhlRoster:       { cache: nhlRosterCache,      ttl: NHL_ROSTER_CACHE_TTL },
+  nbaRoster:       { cache: nbaRosterCache,      ttl: NBA_ROSTER_CACHE_TTL },
+  gameLog:         { cache: gameLogCache,         ttl: GAMELOG_CACHE_TTL },
+};
 
 // ============================================
 // CACHE HELPERS
@@ -84,12 +110,109 @@ function getCached(cache, key, ttl) {
 
 function setCache(cache, key, data, maxSize = 1000) {
   cache.set(key, { data, timestamp: Date.now() });
-  // Evict oldest if too large
   if (cache.size > maxSize) {
     const oldest = cache.keys().next().value;
     cache.delete(oldest);
   }
 }
+
+// ============================================
+// DISK PERSISTENCE
+// ============================================
+function saveCacheToDisk() {
+  try {
+    if (!fs.existsSync(CACHE_DIR)) {
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+    }
+
+    const payload = { version: CACHE_PERSIST_VERSION, savedAt: Date.now(), caches: {} };
+
+    for (const [name, { cache, ttl }] of Object.entries(PERSISTENT_CACHES)) {
+      const entries = [];
+      const now = Date.now();
+      for (const [key, entry] of cache) {
+        // Only persist entries that haven't expired yet
+        if (now - entry.timestamp < ttl) {
+          entries.push([key, entry]);
+        }
+      }
+      payload.caches[name] = entries;
+    }
+
+    // Atomic write: write to temp file then rename
+    const tmpFile = CACHE_FILE + '.tmp';
+    fs.writeFileSync(tmpFile, JSON.stringify(payload));
+    fs.renameSync(tmpFile, CACHE_FILE);
+
+    const totalEntries = Object.values(payload.caches).reduce((s, c) => s + c.length, 0);
+    const sizeKB = Math.round(fs.statSync(CACHE_FILE).size / 1024);
+    console.log(`Cache persisted: ${totalEntries} entries, ${sizeKB}KB`);
+  } catch (err) {
+    console.error('Failed to persist cache:', err.message);
+  }
+}
+
+function loadCacheFromDisk() {
+  try {
+    if (!fs.existsSync(CACHE_FILE)) {
+      console.log('No cache file found — starting fresh');
+      return;
+    }
+
+    const raw = fs.readFileSync(CACHE_FILE, 'utf8');
+    const payload = JSON.parse(raw);
+
+    // Version check — discard incompatible caches
+    if (payload.version !== CACHE_PERSIST_VERSION) {
+      console.log(`Cache file version ${payload.version} doesn't match ${CACHE_PERSIST_VERSION} — discarding`);
+      fs.unlinkSync(CACHE_FILE);
+      return;
+    }
+
+    const now = Date.now();
+    let loaded = 0, expired = 0;
+
+    for (const [name, { cache, ttl }] of Object.entries(PERSISTENT_CACHES)) {
+      const entries = payload.caches?.[name];
+      if (!entries || !Array.isArray(entries)) continue;
+
+      for (const [key, entry] of entries) {
+        // Recheck TTL on load (time may have passed since save)
+        if (entry && entry.timestamp && (now - entry.timestamp < ttl)) {
+          cache.set(key, entry);
+          loaded++;
+        } else {
+          expired++;
+        }
+      }
+    }
+
+    const age = Math.round((now - payload.savedAt) / 1000);
+    console.log(`Cache restored: ${loaded} entries loaded, ${expired} expired (saved ${age}s ago)`);
+  } catch (err) {
+    console.error('Failed to load cache from disk:', err.message);
+    // Corrupt file — remove it so we don't fail every restart
+    try { fs.unlinkSync(CACHE_FILE); } catch {}
+  }
+}
+
+// Persist on clean shutdown
+function setupGracefulShutdown() {
+  const shutdown = (signal) => {
+    console.log(`\n${signal} received — saving cache before exit...`);
+    saveCacheToDisk();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
+// Load cache immediately on module load
+loadCacheFromDisk();
+setupGracefulShutdown();
+
+// Periodic save (in case of hard crash / kill -9)
+setInterval(saveCacheToDisk, CACHE_PERSIST_INTERVAL);
 
 // Rate-limited fetch helper with retries
 async function fetchWithRetry(url, { maxRetries = 2, baseDelay = 800, label = '' } = {}) {
@@ -1761,14 +1884,29 @@ app.get('/api/gamelog/:league/:athleteId', async (req, res) => {
 
 // Cache stats endpoint — for debugging/monitoring
 app.get('/api/cache-stats', (req, res) => {
+  const cacheFileExists = fs.existsSync(CACHE_FILE);
+  let cacheFileSize = 0, cacheFileAge = null;
+  if (cacheFileExists) {
+    const stat = fs.statSync(CACHE_FILE);
+    cacheFileSize = Math.round(stat.size / 1024);
+    cacheFileAge = Math.round((Date.now() - stat.mtimeMs) / 1000);
+  }
   res.json({
-    nhlPlayerStats: nhlPlayerStatsCache.size,
-    nbaPlayerStats: nbaPlayerStatsCache.size,
-    schedule: scheduleCache.size,
-    gameLog: gameLogCache.size,
-    boxscore: boxscoreCache.size,
-    nhlRoster: nhlRosterCache.size,
-    nbaRoster: nbaRosterCache.size,
+    memory: {
+      nhlPlayerStats: nhlPlayerStatsCache.size,
+      nbaPlayerStats: nbaPlayerStatsCache.size,
+      schedule: scheduleCache.size,
+      gameLog: gameLogCache.size,
+      boxscore: boxscoreCache.size,
+      nhlRoster: nhlRosterCache.size,
+      nbaRoster: nbaRosterCache.size,
+    },
+    disk: {
+      file: CACHE_FILE,
+      exists: cacheFileExists,
+      sizeKB: cacheFileSize,
+      ageSeconds: cacheFileAge,
+    },
     activeLobbies: Object.keys(lobbies).length,
     activeSessions: Object.keys(sessions).length
   });
@@ -1806,13 +1944,13 @@ setInterval(() => {
       if (now - entry.timestamp > ttl) cache.delete(key);
     }
   };
-  pruneCacheTTL(nhlPlayerStatsCache, NHL_STATS_CACHE_TTL * 2);
-  pruneCacheTTL(nbaPlayerStatsCache, NBA_STATS_CACHE_TTL * 2);
+  // Persistent caches — use their declared TTL
+  for (const { cache, ttl } of Object.values(PERSISTENT_CACHES)) {
+    pruneCacheTTL(cache, ttl);
+  }
+  // Ephemeral caches
   pruneCacheTTL(scheduleCache, SCHEDULE_CACHE_TTL * 3);
-  pruneCacheTTL(gameLogCache, GAMELOG_CACHE_TTL * 2);
   pruneCacheTTL(boxscoreCache, BOXSCORE_CACHE_TTL * 3);
-  pruneCacheTTL(nhlRosterCache, NHL_ROSTER_CACHE_TTL * 2);
-  pruneCacheTTL(nbaRosterCache, NBA_ROSTER_CACHE_TTL * 2);
 }, 5 * 60 * 1000);
 
 // ============================================

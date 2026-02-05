@@ -117,8 +117,16 @@ function generateDraftOrder(players, rosterSize, draftType = 'snake') {
 // ============================================
 async function fetchNBAGames(targetDate) {
   try {
-    const d = targetDate ? new Date(targetDate) : new Date();
-    const dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    let dateStr;
+    if (targetDate) {
+      // Parse ISO date string directly to avoid timezone shift
+      // "2026-02-05" -> "20260205"
+      const parts = targetDate.split('-');
+      dateStr = parts.join('');
+    } else {
+      const d = new Date();
+      dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    }
     const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${dateStr}`);
     const data = await response.json();
     
@@ -147,8 +155,15 @@ async function fetchNBAGames(targetDate) {
 
 async function fetchNHLGames(targetDate) {
   try {
-    const d = targetDate ? new Date(targetDate) : new Date();
-    const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    let dateStr;
+    if (targetDate) {
+      // Use ISO date string directly to avoid timezone shift
+      // "2026-02-05" stays "2026-02-05"
+      dateStr = targetDate;
+    } else {
+      const d = new Date();
+      dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
     const response = await fetch(`https://api-web.nhle.com/v1/schedule/${dateStr}`);
     if (!response.ok) {
       console.error(`NHL schedule API returned ${response.status} for ${dateStr}`);
@@ -1204,7 +1219,8 @@ io.on('connection', (socket) => {
     
     // For future dates, all games are draftable.
     // For today, allow upcoming AND in-progress games (exclude only finished).
-    const isFutureDate = gameDate && new Date(gameDate).toDateString() !== new Date().toDateString();
+    const todayISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+    const isFutureDate = gameDate && gameDate !== todayISO;
     const upcomingNBA = isFutureDate ? nbaGames : nbaGames.filter(g => g.state !== 'post');
     const upcomingNHL = isFutureDate ? nhlGames : nhlGames.filter(g => g.state !== 'OFF' && g.state !== 'FINAL');
     

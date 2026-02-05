@@ -469,7 +469,21 @@ function shareLobby() {
     navigator.clipboard.writeText(url).then(() => showToast('Link copied!'));
   }
 }
-function startDraft() { socket.emit('startDraft'); }
+function startDraft() {
+  // Show loading overlay immediately
+  showDraftLoading('Fetching games & players...');
+  socket.emit('startDraft');
+}
+
+function showDraftLoading(msg) {
+  const overlay = document.getElementById('draftLoadingOverlay');
+  const msgEl = document.getElementById('draftLoadingMsg');
+  if (msgEl) msgEl.textContent = msg || 'Preparing draft...';
+  overlay.classList.add('visible');
+}
+function hideDraftLoading() {
+  document.getElementById('draftLoadingOverlay').classList.remove('visible');
+}
 function leaveLobby() {
   clearActiveGame();
   mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
@@ -551,7 +565,15 @@ socket.on('lobbyUpdate', (lobby) => {
 
 socket.on('publicLobbyFound', ({ lobbyId }) => { socket.emit('joinLobby', { lobbyId, playerName: myName, sessionId: mySessionId }); });
 
+socket.on('draftLoading', ({ message }) => {
+  showDraftLoading(message || 'Preparing draft...');
+});
+socket.on('draftLoadingDone', () => {
+  hideDraftLoading();
+});
+
 socket.on('draftStart', ({ lobby, availablePlayers: players, draftOrder, currentPick, currentDrafter, timePerPick, games }) => {
+  hideDraftLoading();
   lobbyState = lobby; availablePlayers = players; draftOrderList = draftOrder;
   draftGames = games || []; currentGameFilter = 'all';
   updateActiveGamePhase('drafting');
@@ -638,7 +660,7 @@ socket.on('scoreUpdate', ({ players, state }) => {
   }
 });
 
-socket.on('error', ({ message }) => showToast(message, true));
+socket.on('error', ({ message }) => { hideDraftLoading(); showToast(message, true); });
 socket.on('playerDisconnected', ({ playerName }) => showToast(`${playerName} disconnected`));
 
 // RENDER

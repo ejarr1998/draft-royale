@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Draft Royale - Live</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/live-styles.css">
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  
+  <!-- Top Bar -->
+  <div class="live-top-bar">
+    <div class="live-bar-left">
+      <button class="btn-icon" onclick="goHome()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 12H5M12 19l-7-7 7-7"/>
+        </svg>
+      </button>
+      <div class="live-status">
+        <div class="live-pip"></div>
+        <span class="live-status-text">LIVE</span>
+      </div>
+    </div>
+    <button class="btn-text-danger" onclick="leaveGame()">Leave Game</button>
+  </div>
+
+  <!-- Score Header (Head-to-Head) -->
+  <div id="h2hHeader" class="h2h-header" style="display:none;">
+    <div class="h2h-scoreboard">
+      <div class="h2h-team h2h-left" id="h2hLeft">
+        <div class="h2h-avatar" id="h2hAvatarLeft"></div>
+        <div class="h2h-info">
+          <div class="h2h-name" id="h2hNameLeft">Player 1</div>
+          <div class="h2h-score" id="h2hScoreLeft">0.0</div>
+        </div>
+      </div>
+      
+      <div class="h2h-vs">
+        <div class="h2h-diff" id="h2hDiff">VS</div>
+        <div class="h2h-label">Fantasy Points</div>
+      </div>
+      
+      <div class="h2h-team h2h-right" id="h2hRight">
+        <div class="h2h-info">
+          <div class="h2h-name" id="h2hNameRight">Player 2</div>
+          <div class="h2h-score" id="h2hScoreRight">0.0</div>
+        </div>
+        <div class="h2h-avatar" id="h2hAvatarRight"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rankings Header (3+ players) -->
+  <div id="rankingsHeader" class="rankings-header" style="display:none;">
+    <div class="rankings-title">Leaderboard</div>
+    <div class="rankings-list" id="rankingsList"></div>
+  </div>
+
+  <!-- Live Activity Feed -->
+  <div class="activity-feed">
+    <div class="activity-header">
+      <span class="activity-icon">🔥</span>
+      <span class="activity-title">Live Action</span>
+    </div>
+    <div class="activity-scroll" id="activityFeed">
+      <div class="activity-empty">Waiting for game action...</div>
+    </div>
+  </div>
+
+  <!-- Active Games Bar -->
+  <div class="active-games-bar" id="activeGamesBar">
+    <div class="active-games-title">Active Games</div>
+    <div class="active-games-scroll" id="activeGamesScroll">
+      <!-- Game chips populated by JS -->
+    </div>
+  </div>
+
+  <!-- Main Content Area -->
+  <div class="live-content">
+    
+    <!-- My Roster -->
+    <div class="roster-container">
+      <div class="roster-header">
+        <div class="roster-header-left">
+          <div class="roster-avatar-small" id="myAvatarSmall"></div>
+          <div class="roster-header-title">
+            <div class="roster-header-name" id="myRosterName">Your Team</div>
+            <div class="roster-header-score" id="myRosterScore">0.0 pts</div>
+          </div>
+        </div>
+        <button class="roster-collapse-btn" id="myCollapseBtn" onclick="toggleMyRoster()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="18 15 12 9 6 15"></polyline>
+          </svg>
+        </button>
+      </div>
+      <div class="roster-body" id="myRosterBody">
+        <!-- Player cards -->
+      </div>
+    </div>
+
+    <!-- Opponent Rosters (Collapsible) -->
+    <div id="opponentRosters">
+      <!-- Dynamically populated -->
+    </div>
+
+  </div>
+
+  <!-- Winner Banner -->
+  <div class="winner-banner" id="winnerBanner" style="display:none;">
+    <div class="winner-content">
+      <div class="winner-trophy">🏆</div>
+      <div class="winner-text">
+        <div class="winner-title" id="winnerName">Player Wins!</div>
+        <div class="winner-subtitle" id="winnerScore">123.5 fantasy points</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script src="/live.js"></script>
+</body>
+</html>

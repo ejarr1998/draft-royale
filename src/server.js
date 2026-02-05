@@ -1764,6 +1764,86 @@ io.on('connection', (socket) => {
     });
   });
   
+  socket.on('leaveGame', ({ sessionId, lobbyId }) => {
+    console.log(`🚪 Player leaving game:`, { sessionId, lobbyId });
+    
+    const lobby = lobbies[lobbyId];
+    if (!lobby) {
+      console.log('❌ Lobby not found');
+      return;
+    }
+    
+    const player = lobby.players.find(p => p.id === sessionId);
+    if (!player) {
+      console.log('❌ Player not found in lobby');
+      return;
+    }
+    
+    console.log(`👋 ${player.name} leaving lobby ${lobbyId}`);
+    
+    // Remove player from THIS lobby only
+    lobby.players = lobby.players.filter(p => p.id !== sessionId);
+    
+    // Update session to remove this lobby reference
+    // (but keep session alive - they might be in other games)
+    if (sessions[sessionId] && sessions[sessionId].lobbyId === lobbyId) {
+      // Check if they're in any other lobbies
+      const otherLobby = Object.values(lobbies).find(l => 
+        l.id !== lobbyId && l.players.some(p => p.id === sessionId)
+      );
+      
+      if (otherLobby) {
+        // Update session to point to their other active lobby
+        sessions[sessionId].lobbyId = otherLobby.id;
+        console.log(`✅ Session updated to other active lobby: ${otherLobby.id}`);
+      } else {
+        // No other lobbies, can delete session
+        delete sessions[sessionId];
+        console.log('✅ Deleted session (no other active games)');
+      }
+    }
+    
+    // If lobby is now empty, delete it
+    if (lobby.players.length === 0) {
+      console.log(`🗑️ Lobby ${lobbyId} is now empty, deleting...`);
+      
+      // Stop any score update intervals
+      if (lobby.scoreInterval) {
+        clearInterval(lobby.scoreInterval);
+      }
+      
+      // Remove from lobbies
+      delete lobbies[lobbyId];
+      
+      // Remove from public lobbies if present
+      const idx = publicLobbies.indexOf(lobbyId);
+      if (idx !== -1) {
+        publicLobbies.splice(idx, 1);
+        console.log('✅ Removed from public lobbies');
+      }
+    } else {
+      // Transfer host if needed
+      if (lobby.host === sessionId) {
+        lobby.host = lobby.players[0].id;
+        lobby.players[0].isHost = true;
+        console.log(`👑 Transferred host to ${lobby.players[0].name}`);
+      }
+      
+      // Notify remaining players
+      io.to(lobbyId).emit('playerLeft', { 
+        playerName: player.name,
+        remainingPlayers: lobby.players.length
+      });
+      
+      // Update lobby state
+      if (lobby.state === 'waiting') {
+        io.to(lobbyId).emit('lobbyUpdate', getLobbyState(lobby));
+      }
+    }
+    
+    console.log(`✅ ${player.name} successfully left lobby ${lobbyId}`);
+  });
+  
   socket.on('disconnect', () => {
     const lobbyId = socket.lobbyId;
     const sessionId = socket.sessionId;

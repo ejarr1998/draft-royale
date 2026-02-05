@@ -1139,7 +1139,16 @@ function calculateFantasyScore(player) {
 
 async function updateLiveScores(lobbyId) {
   const lobby = lobbies[lobbyId];
-  if (!lobby || lobby.state !== 'live') return;
+  console.log(`⏰ updateLiveScores called for lobby ${lobbyId}:`, {
+    exists: !!lobby,
+    state: lobby?.state,
+    playerCount: lobby?.players.length
+  });
+  
+  if (!lobby || lobby.state !== 'live') {
+    console.warn(`❌ Skipping score update: ${!lobby ? 'lobby not found' : `state is ${lobby.state}`}`);
+    return;
+  }
   
   const nbaGameIds = new Set();
   const nhlGameIds = new Set();
@@ -1276,7 +1285,14 @@ async function updateLiveScores(lobbyId) {
     lobby.state = 'finished';
     clearInterval(lobby.scoreInterval);
     lobby.scoreInterval = null;
+    console.log(`🏁 Lobby ${lobbyId}: All games finished`);
   }
+  
+  console.log(`📊 Broadcasting scoreUpdate to lobby ${lobbyId}:`, {
+    playerCount: lobby.players.length,
+    state: lobby.state,
+    scores: lobby.players.map(p => ({ name: p.name, score: p.totalScore }))
+  });
   
   io.to(lobbyId).emit('scoreUpdate', {
     players: lobby.players.map(p => ({
@@ -1381,7 +1397,22 @@ io.on('connection', (socket) => {
 
   socket.on('updateSettings', ({ settings }) => {
     const lobby = lobbies[socket.lobbyId];
-    if (!lobby || socket.sessionId !== lobby.host || lobby.state !== 'waiting') return;
+    console.log('📥 Received updateSettings:', {
+      lobbyId: socket.lobbyId,
+      settings,
+      hasLobby: !!lobby,
+      isHost: lobby ? socket.sessionId === lobby.host : false,
+      lobbyState: lobby?.state
+    });
+    
+    if (!lobby || socket.sessionId !== lobby.host || lobby.state !== 'waiting') {
+      console.warn('❌ updateSettings rejected:', {
+        noLobby: !lobby,
+        notHost: lobby && socket.sessionId !== lobby.host,
+        notWaiting: lobby && lobby.state !== 'waiting'
+      });
+      return;
+    }
     
     if (settings.maxPlayers !== undefined) {
       lobby.maxPlayers = Math.min(Math.max(settings.maxPlayers, 1), 8);
@@ -1391,11 +1422,12 @@ io.on('connection', (socket) => {
       const idx = publicLobbies.indexOf(lobby.id);
       if (settings.isPublic && idx === -1) {
         publicLobbies.push(lobby.id);
-        console.log(`Lobby ${lobby.id} is now public`);
+        console.log(`✅ Lobby ${lobby.id} is now PUBLIC (total: ${publicLobbies.length})`);
+        console.log('📋 Public lobbies:', publicLobbies);
       }
       if (!settings.isPublic && idx !== -1) {
         publicLobbies.splice(idx, 1);
-        console.log(`Lobby ${lobby.id} is now private`);
+        console.log(`✅ Lobby ${lobby.id} is now PRIVATE (total: ${publicLobbies.length})`);
       }
     }
     if (settings.draftType) lobby.settings.draftType = settings.draftType;
@@ -1517,6 +1549,7 @@ io.on('connection', (socket) => {
       // Send personalized pool if it's their turn or will be soon
       sendPersonalizedPlayerPool(lobby, sessionId);
     } else {
+      console.log(`📥 Rejoining ${player.name} to ${lobby.state} game in lobby ${lobby.id}`);
       socket.emit('rejoinState', {
         phase: lobby.state,
         lobby: lobbyStateData,
@@ -1526,6 +1559,7 @@ io.on('connection', (socket) => {
           id: p.id, name: p.name, roster: p.roster, totalScore: p.totalScore
         }))
       });
+      console.log(`✅ Sent rejoinState for ${lobby.state} phase with ${lobby.players.length} players`);
     }
     
     io.to(lobby.id).emit('playerReconnected', { playerName: player.name });
@@ -1533,17 +1567,33 @@ io.on('connection', (socket) => {
   });
   
   socket.on('findPublicLobby', ({ playerName }) => {
+    console.log('🔍 Finding public lobby...');
+    console.log('📋 Public lobbies array:', publicLobbies);
+    console.log('📊 Total public lobbies:', publicLobbies.length);
+    
     let found = null;
     for (const lobbyId of publicLobbies) {
       const lobby = lobbies[lobbyId];
+      console.log(`  Checking lobby ${lobbyId}:`, {
+        exists: !!lobby,
+        state: lobby?.state,
+        players: lobby?.players.length,
+        maxPlayers: lobby?.maxPlayers,
+        isPublic: lobby?.isPublic
+      });
+      
       if (lobby && lobby.state === 'waiting' && lobby.players.length < lobby.maxPlayers) {
         found = lobbyId;
+        console.log(`✅ Found joinable public lobby: ${lobbyId}`);
         break;
       }
     }
+    
     if (found) {
+      console.log(`✅ Sending lobby ${found} to player`);
       socket.emit('publicLobbyFound', { lobbyId: found });
     } else {
+      console.log('❌ No joinable public lobbies found');
       socket.emit('error', { message: 'No public lobbies available. Create one!' });
     }
   });

@@ -472,6 +472,55 @@
 
     .pool-header { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 
+    /* Draft games bar */
+    .draft-games-bar {
+      margin-bottom: 8px;
+    }
+    .draft-games-label {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-dim);
+      margin-bottom: 6px;
+    }
+    .draft-games-scroll {
+      display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px;
+      scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    .draft-games-scroll::-webkit-scrollbar { display: none; }
+    .draft-game-chip {
+      flex-shrink: 0; scroll-snap-align: start; cursor: pointer;
+      padding: 8px 12px; border-radius: 10px;
+      background: var(--surface); border: 1px solid var(--border);
+      transition: all 0.2s; display: flex; align-items: center; gap: 8px;
+      min-width: 0;
+    }
+    .draft-game-chip:hover { border-color: var(--border-light); transform: translateY(-1px); }
+    .draft-game-chip.chip-active { border-color: var(--accent); background: rgba(255,87,34,0.08); box-shadow: 0 2px 10px rgba(255,87,34,0.12); }
+    .draft-game-chip.chip-active-nhl { border-color: var(--nhl); background: rgba(0,180,216,0.08); box-shadow: 0 2px 10px rgba(0,180,216,0.12); }
+    .draft-game-chip.chip-all { padding: 8px 14px; }
+    .draft-game-chip.chip-all.chip-active { border-color: var(--accent); background: rgba(255,87,34,0.08); }
+    .dgc-league {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.55rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1px; padding: 2px 5px; border-radius: 4px;
+    }
+    .dgc-league.nba { background: rgba(255,109,46,0.15); color: var(--nba); }
+    .dgc-league.nhl { background: rgba(0,180,216,0.15); color: var(--nhl); }
+    .dgc-matchup {
+      font-weight: 700; font-size: 0.78rem; white-space: nowrap; line-height: 1.2;
+    }
+    .dgc-time {
+      font-size: 0.6rem; color: var(--text-dim); white-space: nowrap;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .dgc-time.dgc-live { color: var(--red); font-weight: 700; }
+    .dgc-info { display: flex; flex-direction: column; gap: 1px; }
+    .dgc-count {
+      font-family: 'JetBrains Mono', monospace; font-size: 0.6rem;
+      color: var(--text-dim); font-weight: 600;
+    }
+    .chip-active .dgc-matchup, .chip-active-nhl .dgc-matchup { color: var(--text); }
+    .chip-all .dgc-count { font-size: 0.7rem; }
+
     .filter-row {
       display: flex; gap: 6px; align-items: center;
       overflow-x: auto; flex-wrap: nowrap;
@@ -1097,6 +1146,12 @@
       .filter-chip { padding: 8px 12px; font-size: 0.72rem; min-height: 36px; }
       .search-input { padding: 8px 10px; font-size: 0.82rem; min-height: 36px; }
 
+      /* Draft games bar */
+      .draft-game-chip { padding: 6px 10px; gap: 6px; }
+      .dgc-matchup { font-size: 0.72rem; }
+      .dgc-league { font-size: 0.5rem; padding: 2px 4px; }
+      .dgc-time { font-size: 0.55rem; }
+
       /* Player cards - bigger touch targets, stacked info */
       .player-pool-grid { gap: 4px; max-height: 50vh; }
       .player-card { padding: 12px 10px; gap: 8px; min-height: 64px; }
@@ -1364,6 +1419,10 @@
       </div>
       <div class="roster-strip" id="draftRosters"></div>
       <div id="waitingBanner" class="waiting-banner" style="display:none;">⏳ Waiting for pick...</div>
+      <div class="draft-games-bar" id="draftGamesBar" style="display:none;">
+        <div class="draft-games-label">🎮 Filter by Game</div>
+        <div class="draft-games-scroll" id="draftGamesScroll"></div>
+      </div>
       <div id="draftPool">
         <div class="pool-header">
           <div class="search-row">
@@ -1460,6 +1519,7 @@
     const socket = io();
     let myName = '', myLobbyId = null, mySocketId = null, mySessionId = null, isHost = false;
     let currentFilter = 'all', currentPosFilter = 'all', availablePlayers = [], draftTimerInterval = null;
+    let draftGames = [], currentGameFilter = 'all';
     let lobbyState = null, amIDrafting = false, draftOrderList = [];
 
     // Session management - persists across refreshes AND tab closes
@@ -1599,8 +1659,10 @@
         showScreen('draftScreen');
         availablePlayers = data.availablePlayers;
         draftOrderList = data.draftOrder;
+        draftGames = data.games || []; currentGameFilter = 'all';
         amIDrafting = data.currentDrafter === mySessionId;
         buildPositionFilters(data.availablePlayers);
+        renderDraftGamesBar();
         renderDraftRosters(data.lobby.players, data.currentDrafter);
         updateDraftUI(data.currentPick, data.currentDrafter, data.timePerPick);
         renderPlayerPool();
@@ -2005,11 +2067,13 @@
 
     socket.on('publicLobbyFound', ({ lobbyId }) => { socket.emit('joinLobby', { lobbyId, playerName: myName, sessionId: mySessionId }); });
 
-    socket.on('draftStart', ({ lobby, availablePlayers: players, draftOrder, currentPick, currentDrafter, timePerPick }) => {
+    socket.on('draftStart', ({ lobby, availablePlayers: players, draftOrder, currentPick, currentDrafter, timePerPick, games }) => {
       lobbyState = lobby; availablePlayers = players; draftOrderList = draftOrder;
+      draftGames = games || []; currentGameFilter = 'all';
       updateActiveGamePhase('drafting');
       showScreen('draftScreen');
       buildPositionFilters(players);
+      renderDraftGamesBar();
       renderDraftRosters(lobby.players, currentDrafter);
       amIDrafting = currentDrafter === mySessionId;
       updateDraftUI(currentPick, currentDrafter, timePerPick);
@@ -2024,6 +2088,7 @@
       // Re-render rosters immediately to show the pick
       const currentDrafterNow = draftOrderList[pickNumber + 1] || null;
       renderDraftRosters(players, currentDrafterNow);
+      renderDraftGamesBar();
       renderPlayerPool();
     });
 
@@ -2148,6 +2213,71 @@
         sorted.map(pos => `<button class="filter-chip" data-pos="${pos}" onclick="setPosFilter('${pos}',this)">${pos}</button>`).join('');
     }
 
+    function renderDraftGamesBar() {
+      const bar = document.getElementById('draftGamesBar');
+      const scroll = document.getElementById('draftGamesScroll');
+      if (!draftGames.length) { bar.style.display = 'none'; return; }
+      bar.style.display = 'block';
+
+      // Count available players per game
+      const countByGame = {};
+      for (const p of availablePlayers) {
+        countByGame[p.gameId] = (countByGame[p.gameId] || 0) + 1;
+      }
+
+      const totalPlayers = availablePlayers.length;
+      const isAllActive = currentGameFilter === 'all';
+
+      let html = `<div class="draft-game-chip chip-all ${isAllActive ? 'chip-active' : ''}" onclick="setGameFilter('all')">
+        <div class="dgc-info">
+          <div class="dgc-matchup">All Games</div>
+          <div class="dgc-count">${totalPlayers} players</div>
+        </div>
+      </div>`;
+
+      // Sort: draftable games first (pre/FUT/in/LIVE), then final; within groups sort by start time
+      const sorted = [...draftGames].sort((a, b) => {
+        const aFinal = a.state === 'post' || a.state === 'OFF' || a.state === 'FINAL';
+        const bFinal = b.state === 'post' || b.state === 'OFF' || b.state === 'FINAL';
+        if (aFinal !== bFinal) return aFinal ? 1 : -1;
+        return new Date(a.startTime) - new Date(b.startTime);
+      });
+
+      for (const g of sorted) {
+        const count = countByGame[g.gameId] || 0;
+        const isActive = currentGameFilter === g.gameId;
+        const isNHL = g.league === 'nhl';
+        const activeClass = isActive ? (isNHL ? 'chip-active-nhl' : 'chip-active') : '';
+        const time = new Date(g.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        const isLive = g.state === 'in' || g.state === 'LIVE';
+        const isFinal = g.state === 'post' || g.state === 'OFF' || g.state === 'FINAL';
+        const timeText = isLive ? '● LIVE' : isFinal ? 'FINAL' : time;
+        const timeClass = isLive ? 'dgc-live' : '';
+
+        html += `<div class="draft-game-chip ${activeClass}" onclick="setGameFilter('${g.gameId}')" ${count === 0 && !isActive ? 'style="opacity:0.4;"' : ''}>
+          <div class="dgc-league ${g.league}">${g.league}</div>
+          <div class="dgc-info">
+            <div class="dgc-matchup">${g.awayTeam} @ ${g.homeTeam}</div>
+            <div class="dgc-time ${timeClass}">${timeText} · ${count} avail</div>
+          </div>
+        </div>`;
+      }
+
+      scroll.innerHTML = html;
+    }
+
+    function setGameFilter(gameId) {
+      currentGameFilter = gameId;
+      currentPosFilter = 'all'; // reset position when switching game
+      // Rebuild position filters for the visible subset
+      let visible = availablePlayers;
+      if (gameId !== 'all') visible = visible.filter(p => p.gameId === gameId);
+      if (currentFilter !== 'all') visible = visible.filter(p => p.league === currentFilter);
+      buildPositionFilters(visible);
+      renderDraftGamesBar();
+      renderPlayerPool();
+    }
+
     function setPosFilter(pos, btn) {
       currentPosFilter = pos;
       document.querySelectorAll('#positionFilters .filter-chip').forEach(b => b.classList.remove('active-pos'));
@@ -2174,6 +2304,7 @@
       const search = (document.getElementById('playerSearch')?.value||'').toLowerCase();
       const banner = document.getElementById('waitingBanner');
       let filtered = availablePlayers;
+      if (currentGameFilter !== 'all') filtered = filtered.filter(p => p.gameId === currentGameFilter);
       if (currentFilter !== 'all') filtered = filtered.filter(p => p.league === currentFilter);
       if (currentPosFilter !== 'all') filtered = filtered.filter(p => p.position === currentPosFilter);
       if (search) filtered = filtered.filter(p => p.name.toLowerCase().includes(search) || p.team.toLowerCase().includes(search) || (p.teamName||'').toLowerCase().includes(search));
@@ -2415,6 +2546,7 @@
       btn.classList.add(filter === 'nhl' ? 'active-nhl' : 'active');
       // Rebuild position filters for visible players
       let visible = availablePlayers;
+      if (currentGameFilter !== 'all') visible = visible.filter(p => p.gameId === currentGameFilter);
       if (filter !== 'all') visible = visible.filter(p => p.league === filter);
       buildPositionFilters(visible);
       filterPlayers();

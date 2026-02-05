@@ -237,42 +237,19 @@
       </div>
     </div>
 
-    <!-- LIVE -->
-    <div class="screen" id="liveScreen">
-      <div class="live-pip-bar" id="liveBar">
-        <div class="live-pip"></div>
-        <div class="live-pip-label">Live</div>
-      </div>
+    <!-- LIVE SCREEN: Now uses live.html (separate page) -->
 
-      <div id="winnerBanner" style="display:none;">
-        <div class="winner-card">
-          <div class="winner-trophy">🏆</div>
-          <div class="winner-title" id="winnerName">Winner!</div>
-          <div class="winner-subtitle" id="winnerScore"></div>
+    <!-- Games Lobby Modal -->
+    <div class="modal-overlay" id="gamesLobbyModal" onclick="if(event.target===this)closeGamesLobby()">
+      <div class="games-lobby-modal">
+        <div class="glm-header">
+          <h2>Your Active Games</h2>
+          <button class="glm-close-btn" onclick="closeGamesLobby()">✕</button>
+        </div>
+        <div class="glm-body" id="gamesLobbyList">
+          <!-- Games rendered by JS -->
         </div>
       </div>
-
-      <!-- Head-to-head matchup (2 players) -->
-      <div id="matchupView" style="display:none;">
-        <div class="matchup-header">
-          <div class="matchup-scores">
-            <div class="matchup-player" id="mp-left"></div>
-            <div class="matchup-vs">VS</div>
-            <div class="matchup-player" id="mp-right"></div>
-          </div>
-          <div class="matchup-diff" id="matchupDiff"></div>
-        </div>
-
-        <div id="matchupRosters"></div>
-      </div>
-
-      <!-- 3+ players ranked list -->
-      <div id="rankListView" style="display:none;"></div>
-
-      <div class="live-spacer"></div>
-      <button class="btn btn-glass back-home-btn" onclick="goHome()">← Back to Home</button>
-      <div class="spacer-xs"></div>
-      <button class="btn btn-glass leave-game-btn" onclick="leaveGame()">Leave Game Permanently</button>
     </div>
 
     <div class="draft-loading-overlay" id="draftLoadingOverlay">

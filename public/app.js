@@ -6,7 +6,6 @@ let lobbyState = null, amIDrafting = false, draftOrderList = [];
 
 // Session management - persists across refreshes AND tab closes
 function getSessionId() {
-  // Use localStorage so session survives tab close/reopen
   let sid = localStorage.getItem('dr_sessionId');
   if (!sid) {
     sid = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
@@ -26,7 +25,6 @@ function getActiveGame() {
   try {
     const data = JSON.parse(localStorage.getItem('dr_activeGame'));
     if (!data) return null;
-    // Expire after 5 hours (games don't last longer)
     if (Date.now() - data.savedAt > 5 * 60 * 60 * 1000) {
       clearActiveGame();
       return null;
@@ -67,7 +65,6 @@ function renderActiveGameBanner() {
 function rejoinActiveGame() {
   const ag = getActiveGame();
   if (!ag) return;
-  // Make sure we're using the right session
   mySessionId = ag.sessionId;
   localStorage.setItem('dr_sessionId', mySessionId);
   socket.emit('rejoin', { sessionId: mySessionId });
@@ -76,7 +73,6 @@ function rejoinActiveGame() {
 function abandonGame() {
   if (!confirm('Leave this game? You won\'t be able to rejoin.')) return;
   clearActiveGame();
-  // Generate a fresh session so the server won't associate us anymore
   mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
   localStorage.setItem('dr_sessionId', mySessionId);
   myLobbyId = null; isHost = false;
@@ -86,20 +82,17 @@ function abandonGame() {
 
 socket.on('connect', () => {
   mySocketId = socket.id;
-  // Check for join code in URL
   const params = new URLSearchParams(window.location.search);
   const joinCode = params.get('join');
   if (joinCode) {
     document.getElementById('joinCode').value = joinCode.toUpperCase();
     window.history.replaceState({}, '', window.location.pathname);
-    // Fresh session so rejoin won't hijack us into an old game
     clearActiveGame();
     mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
     localStorage.setItem('dr_sessionId', mySessionId);
     renderActiveGameBanner();
-    return; // skip rejoin, user will manually click join
+    return;
   }
-  // Attempt rejoin if we have an active game
   const ag = getActiveGame();
   if (ag && mySessionId) {
     socket.emit('rejoin', { sessionId: mySessionId });
@@ -114,7 +107,6 @@ socket.on('rejoinState', (data) => {
   myLobbyId = data.lobby.id;
   myName = data.lobby.players.find(p => p.id === mySessionId)?.name || myName;
 
-  // Persist active game state
   saveActiveGame(myLobbyId, data.phase, myName);
 
   if (data.phase === 'waiting') {
@@ -123,14 +115,20 @@ socket.on('rejoinState', (data) => {
     if (isHost) {
       document.getElementById('hostControls').style.display = 'block';
       document.getElementById('waitingMsg').style.display = 'none';
+      // Restore settings from server state (in case host reconnects)
       if (data.lobby.settings) {
-        lobbySettings = { ...lobbySettings, ...data.lobby.settings, maxPlayers: data.lobby.maxPlayers, isPublic: data.lobby.isPublic };
-        document.getElementById('timeVal').textContent = lobbySettings.timePerPick;
-        document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
-        updateRosterUI();
-        buildLobbyDatePicker();
+        lobbySettings = {
+          ...lobbySettings,
+          ...data.lobby.settings,
+          maxPlayers: data.lobby.maxPlayers,
+          isPublic: data.lobby.isPublic
+        };
+        syncSettingsUI();
       }
       updateSettingsSummary();
+      buildLobbyDatePicker();
+      // Broadcast preview so guests see current settings
+      broadcastSettingsPreview();
     } else {
       document.getElementById('hostControls').style.display = 'none';
       document.getElementById('waitingMsg').style.display = 'block';
@@ -169,7 +167,6 @@ socket.on('rejoinState', (data) => {
 });
 
 socket.on('rejoinFailed', () => {
-  // No active session on server — clear stale local data
   clearActiveGame();
   renderActiveGameBanner();
 });
@@ -185,13 +182,11 @@ function showScreen(id) {
 }
 function goHome() {
   showScreen('homeScreen');
-  // Don't destroy the session — just navigate back so user can rejoin
   renderActiveGameBanner();
 }
 function leaveGame() {
   if (!confirm('Leave this game permanently? You won\'t be able to rejoin.')) return;
   clearActiveGame();
-  // Generate fresh sessionId so server won't reconnect us
   mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
   localStorage.setItem('dr_sessionId', mySessionId);
   myLobbyId = null; isHost = false;
@@ -223,7 +218,6 @@ async function loadGamesForDate(dateStr) {
       const time = new Date(g.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       const isLive = g.state === 'in' || g.state === 'LIVE';
       const isFinal = g.state === 'post' || g.state === 'OFF' || g.state === 'FINAL';
-      const isUpcoming = g.state === 'pre' || g.state === 'FUT';
       const statusText = isLive ? '● LIVE' : isFinal ? 'FINAL' : time;
       const statusClass = isLive ? 'game-tile-live' : isFinal ? 'game-tile-final' : '';
       const draftable = !isFinal ? '<div class="game-tile-draftable">✓ Draftable</div>' : '';
@@ -241,11 +235,12 @@ async function loadGamesForDate(dateStr) {
 buildHomeDatePicker();
 loadGamesForDate(null);
 renderActiveGameBanner();
-// Restore player name from previous session
 const savedName = localStorage.getItem('dr_playerName');
 if (savedName) document.getElementById('playerName').value = savedName;
 
-// Lobby settings state
+// ============================================
+// LOBBY SETTINGS — purely local until Start Draft
+// ============================================
 let lobbySettings = {
   draftType: 'snake',
   timePerPick: 30,
@@ -253,7 +248,7 @@ let lobbySettings = {
   leagues: 'both',
   maxPlayers: 2,
   isPublic: false,
-  gameDate: null // null = today
+  gameDate: null
 };
 
 // Date helpers
@@ -262,7 +257,6 @@ function getDateOptions() {
   for (let i = 0; i < 4; i++) {
     const d = new Date();
     d.setDate(d.getDate() + i);
-    // Use local date components to avoid UTC timezone shift
     const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     let label;
     if (i === 0) label = 'Today';
@@ -274,7 +268,7 @@ function getDateOptions() {
   return options;
 }
 
-let selectedHomeDate = null; // null = today
+let selectedHomeDate = null;
 
 function buildHomeDatePicker() {
   const opts = getDateOptions();
@@ -307,7 +301,7 @@ function setGameDate(iso, btn) {
   lobbySettings.gameDate = iso;
   document.querySelectorAll('#gameDateControl .seg-btn').forEach(b => b.className = 'seg-btn');
   btn.classList.add('seg-active');
-  emitSettings();
+  onSettingsChanged();
 }
 
 function getTotalSlots() {
@@ -326,60 +320,53 @@ function setLeague(val, btn) {
   else if (val === 'nhl') btn.classList.add('seg-active-nhl');
   else btn.classList.add('seg-active-both');
   updateRosterUI();
-  emitSettings();
+  onSettingsChanged();
 }
 
 function setDraftType(val, btn) {
   lobbySettings.draftType = val;
   document.querySelectorAll('#draftTypeControl .seg-btn').forEach(b => b.className = 'seg-btn');
   btn.classList.add('seg-active');
-  emitSettings();
+  onSettingsChanged();
 }
 
 function adjustTime(delta) {
   lobbySettings.timePerPick = Math.min(120, Math.max(10, lobbySettings.timePerPick + delta));
   document.getElementById('timeVal').textContent = lobbySettings.timePerPick;
-  emitSettings();
+  onSettingsChanged();
 }
 
 function adjustSlot(league, delta) {
   const cur = lobbySettings.rosterSlots[league] || 0;
   lobbySettings.rosterSlots[league] = Math.min(10, Math.max(1, cur + delta));
   updateRosterUI();
-  emitSettings();
+  onSettingsChanged();
 }
 
 function updateRosterUI() {
   const s = lobbySettings;
   const lg = s.leagues;
-  const rosterRow = document.getElementById('rosterRow');
   const controls = document.getElementById('rosterControls');
 
   document.getElementById('nbaSlotsVal').textContent = s.rosterSlots.nba;
   document.getElementById('nhlSlotsVal').textContent = s.rosterSlots.nhl;
   document.getElementById('totalSlotsVal').textContent = getTotalSlots();
 
-  // Show/hide league slot controls based on league selection
-  const nbaEls = controls.querySelectorAll('.nba-slot, .slot-control:first-child');
-  const nhlEls = controls.querySelectorAll('.nhl-slot');
   const nhlControl = controls.querySelectorAll('.slot-control')[1];
   const dividers = controls.querySelectorAll('.slot-divider');
   const totalEl = document.getElementById('totalSlotsVal');
 
   if (lg === 'nba') {
-    // Only NBA: show single stepper
     controls.querySelectorAll('.slot-control')[0].style.display = 'flex';
     if (nhlControl) nhlControl.style.display = 'none';
     dividers.forEach(d => d.style.display = 'none');
     totalEl.style.display = 'none';
   } else if (lg === 'nhl') {
-    // Only NHL: show single stepper
     controls.querySelectorAll('.slot-control')[0].style.display = 'none';
     if (nhlControl) nhlControl.style.display = 'flex';
     dividers.forEach(d => d.style.display = 'none');
     totalEl.style.display = 'none';
   } else {
-    // Both: show both with + = total
     controls.querySelectorAll('.slot-control')[0].style.display = 'flex';
     if (nhlControl) nhlControl.style.display = 'flex';
     dividers.forEach(d => d.style.display = 'block');
@@ -390,23 +377,66 @@ function updateRosterUI() {
 function adjustMaxPlayers(delta) {
   lobbySettings.maxPlayers = Math.min(8, Math.max(1, lobbySettings.maxPlayers + delta));
   document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
-  emitSettings();
+  onSettingsChanged();
 }
 
 function togglePublic() {
   lobbySettings.isPublic = !lobbySettings.isPublic;
   document.getElementById('publicToggle').classList.toggle('on');
-  emitSettings();
+  onSettingsChanged();
 }
 
-function emitSettings() {
+// Sync all UI controls to match lobbySettings (used on reconnect)
+function syncSettingsUI() {
+  document.getElementById('timeVal').textContent = lobbySettings.timePerPick;
+  document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
+
+  // League buttons
+  document.querySelectorAll('#leagueControl .seg-btn').forEach(b => b.className = 'seg-btn');
+  const leagueBtns = document.querySelectorAll('#leagueControl .seg-btn');
+  leagueBtns.forEach(b => {
+    const text = b.textContent.trim().toLowerCase();
+    if (lobbySettings.leagues === 'nba' && text.includes('nba')) b.classList.add('seg-active');
+    else if (lobbySettings.leagues === 'nhl' && text.includes('nhl')) b.classList.add('seg-active-nhl');
+    else if (lobbySettings.leagues === 'both' && text === 'both') b.classList.add('seg-active-both');
+  });
+
+  // Draft type buttons
+  document.querySelectorAll('#draftTypeControl .seg-btn').forEach(b => {
+    b.className = 'seg-btn';
+    const text = b.textContent.trim().toLowerCase();
+    if (lobbySettings.draftType === 'snake' && text.includes('snake')) b.classList.add('seg-active');
+    else if (lobbySettings.draftType === 'linear' && text.includes('linear')) b.classList.add('seg-active');
+  });
+
+  // Public toggle
+  const toggle = document.getElementById('publicToggle');
+  if (lobbySettings.isPublic) toggle.classList.add('on');
+  else toggle.classList.remove('on');
+
+  updateRosterUI();
+}
+
+// ── Called on every local settings change ──
+// Updates the local summary and broadcasts a lightweight preview to guests.
+// Does NOT send settings to the server.
+function onSettingsChanged() {
   updateSettingsSummary();
-  socket.emit('updateSettings', { settings: {
-    ...lobbySettings,
-  }});
+  broadcastSettingsPreview();
 }
 
-function updateSettingsSummary() {
+// Send a lightweight settings preview to other players in the lobby
+// This goes through the server as a simple relay — no server-side mutation.
+function broadcastSettingsPreview() {
+  if (!isHost || !myLobbyId) return;
+  socket.emit('settingsPreview', {
+    summary: buildSettingsSummaryText(),
+    maxPlayers: lobbySettings.maxPlayers,
+    isPublic: lobbySettings.isPublic
+  });
+}
+
+function buildSettingsSummaryText() {
   const s = lobbySettings;
   const total = getTotalSlots();
   let rosterStr;
@@ -415,8 +445,11 @@ function updateSettingsSummary() {
   else rosterStr = `${s.rosterSlots.nba}🏀 + ${s.rosterSlots.nhl}🏒 = ${total}`;
   const draftStr = s.draftType === 'snake' ? 'Snake' : 'Linear';
   const dateLabel = getDateLabel(s.gameDate);
-  document.getElementById('settingsSummary').textContent =
-    `${dateLabel} · ${rosterStr} · ${draftStr} · ${s.timePerPick}s/pick · ${s.maxPlayers} players`;
+  return `${dateLabel} · ${rosterStr} · ${draftStr} · ${s.timePerPick}s/pick · ${s.maxPlayers} players`;
+}
+
+function updateSettingsSummary() {
+  document.getElementById('settingsSummary').textContent = buildSettingsSummaryText();
 }
 
 function getDateLabel(iso) {
@@ -429,22 +462,29 @@ function getDateLabel(iso) {
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+// ── Receive settings preview from host (guests only) ──
+socket.on('settingsPreview', ({ summary, maxPlayers }) => {
+  // Update guest summary display
+  const el = document.getElementById('guestSettingsSummary');
+  if (el) el.textContent = summary;
+
+  // If maxPlayers changed, re-render player slots
+  if (lobbyState && maxPlayers !== undefined) {
+    lobbyState.maxPlayers = maxPlayers;
+    renderLobbyPlayers(lobbyState);
+  }
+});
+
 function createLobby() {
   myName = document.getElementById('playerName').value.trim();
   if (!myName) return showToast('Enter your name!', true);
   localStorage.setItem('dr_playerName', myName);
+  // Send only name and initial maxPlayers/isPublic — settings are NOT sent here
   socket.emit('createLobby', {
     playerName: myName,
     maxPlayers: lobbySettings.maxPlayers,
     isPublic: lobbySettings.isPublic,
-    sessionId: mySessionId,
-    settings: {
-      draftType: lobbySettings.draftType,
-      timePerPick: lobbySettings.timePerPick,
-      rosterSlots: lobbySettings.rosterSlots,
-      leagues: lobbySettings.leagues,
-      gameDate: lobbySettings.gameDate
-    }
+    sessionId: mySessionId
   });
 }
 function joinLobby() {
@@ -470,9 +510,19 @@ function shareLobby() {
   }
 }
 function startDraft() {
-  // Show loading overlay immediately
   showDraftLoading('Fetching games & players...');
-  socket.emit('startDraft');
+  // ── Send ALL settings to the server now, at draft time ──
+  socket.emit('startDraft', {
+    settings: {
+      draftType: lobbySettings.draftType,
+      timePerPick: lobbySettings.timePerPick,
+      rosterSlots: lobbySettings.rosterSlots,
+      leagues: lobbySettings.leagues,
+      gameDate: lobbySettings.gameDate,
+      maxPlayers: lobbySettings.maxPlayers,
+      isPublic: lobbySettings.isPublic
+    }
+  });
 }
 
 function showDraftLoading(msg) {
@@ -503,13 +553,7 @@ socket.on('lobbyCreated', ({ lobbyId, lobby }) => {
   document.getElementById('lobbyCode').textContent = lobbyId;
   document.getElementById('hostControls').style.display = 'block';
   document.getElementById('waitingMsg').style.display = 'none';
-  // Sync settings from server
-  if (lobby.settings) {
-    lobbySettings = { ...lobbySettings, ...lobby.settings, maxPlayers: lobby.maxPlayers, isPublic: lobby.isPublic };
-    document.getElementById('timeVal').textContent = lobbySettings.timePerPick;
-    document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
-    updateRosterUI();
-  }
+  syncSettingsUI();
   updateSettingsSummary();
   buildLobbyDatePicker();
   renderLobbyPlayers(lobby);
@@ -525,21 +569,19 @@ socket.on('lobbyUpdate', (lobby) => {
   lobbyState = lobby;
   saveActiveGame(lobby.id, lobby.state || 'waiting', myName);
   
-  // Always check host status — handles host transfer
+  // Check host status — handles host transfer
   const me = lobby.players.find(p => p.id === mySessionId);
   if (me?.isHost && !isHost) {
     isHost = true;
     document.getElementById('hostControls').style.display = 'block';
     document.getElementById('waitingMsg').style.display = 'none';
-    // Sync settings UI
-    if (lobby.settings) {
-      lobbySettings = { ...lobbySettings, ...lobby.settings, maxPlayers: lobby.maxPlayers, isPublic: lobby.isPublic };
-      document.getElementById('timeVal').textContent = lobbySettings.timePerPick;
-      document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
-      updateRosterUI();
-      buildLobbyDatePicker();
-    }
+    // On host transfer, adopt the lobby's current maxPlayers
+    lobbySettings.maxPlayers = lobby.maxPlayers;
+    lobbySettings.isPublic = lobby.isPublic;
+    syncSettingsUI();
     updateSettingsSummary();
+    buildLobbyDatePicker();
+    broadcastSettingsPreview();
     showToast('You are now the host!');
   } else if (!me?.isHost) {
     isHost = false;
@@ -547,19 +589,6 @@ socket.on('lobbyUpdate', (lobby) => {
     document.getElementById('waitingMsg').style.display = 'block';
   }
 
-  // Show settings to guests
-  if (!isHost && lobby.settings) {
-    const s = lobby.settings;
-    const slots = s.rosterSlots || { nba: 4, nhl: 2 };
-    let rosterStr;
-    if (s.leagues === 'nba') rosterStr = `${slots.nba} NBA`;
-    else if (s.leagues === 'nhl') rosterStr = `${slots.nhl} NHL`;
-    else rosterStr = `${slots.nba}🏀 + ${slots.nhl}🏒`;
-    const draftStr = s.draftType === 'snake' ? 'Snake' : 'Linear';
-    const dateLabel = getDateLabel(s.gameDate);
-    const el = document.getElementById('guestSettingsSummary');
-    if (el) el.textContent = `${dateLabel} · ${rosterStr} · ${draftStr} · ${s.timePerPick}s/pick · ${lobby.maxPlayers} max`;
-  }
   renderLobbyPlayers(lobby);
 });
 
@@ -592,7 +621,6 @@ socket.on('pickMade', ({ picker, player, pickNumber, availablePlayers: remaining
   availablePlayers = remaining;
   if (lobbyState) lobbyState.players = players;
   addDraftLog(picker.name, player, autoPick);
-  // Re-render rosters immediately to show the pick
   const currentDrafterNow = draftOrderList[pickNumber + 1] || null;
   renderDraftRosters(players, currentDrafterNow);
   renderDraftGamesBar();
@@ -641,7 +669,7 @@ function goToLive() {
 }
 
 socket.on('scoreUpdate', ({ players, state }) => {
-  pendingLivePlayers = players; // keep updated in case still on recap
+  pendingLivePlayers = players;
   const activeScreen = document.querySelector('.screen.active');
   if (activeScreen && activeScreen.id === 'liveScreen') {
     renderLive(players, state);
@@ -667,8 +695,9 @@ socket.on('playerDisconnected', ({ playerName }) => showToast(`${playerName} dis
 function renderLobbyPlayers(lobby) {
   const c = document.getElementById('playerSlots');
   const av = ['avatar-1','avatar-2','avatar-3','avatar-4','avatar-5'];
+  const maxP = lobby.maxPlayers || lobbySettings.maxPlayers;
   let html = '';
-  for (let i = 0; i < lobby.maxPlayers; i++) {
+  for (let i = 0; i < maxP; i++) {
     const p = lobby.players[i];
     if (p) {
       const isMe = p.id === mySessionId;
@@ -726,10 +755,8 @@ function renderDraftGamesBar() {
   if (!draftGames.length) { bar.style.display = 'none'; return; }
   bar.style.display = 'block';
 
-  // Filter games by current league filter
   const filteredGames = currentFilter === 'all' ? draftGames : draftGames.filter(g => g.league === currentFilter);
 
-  // Count available players per game (also respecting league filter)
   const countByGame = {};
   let countedPlayers = availablePlayers;
   if (currentFilter !== 'all') countedPlayers = countedPlayers.filter(p => p.league === currentFilter);
@@ -738,9 +765,7 @@ function renderDraftGamesBar() {
   }
 
   const totalPlayers = countedPlayers.length;
-  const isAllActive = currentGameFilter === 'all';
 
-  // If the currently selected game filter is no longer visible, reset to 'all'
   if (currentGameFilter !== 'all' && !filteredGames.some(g => g.gameId === currentGameFilter)) {
     currentGameFilter = 'all';
   }
@@ -752,7 +777,6 @@ function renderDraftGamesBar() {
     </div>
   </div>`;
 
-  // Sort: draftable games first (pre/FUT/in/LIVE), then final; within groups sort by start time
   const sorted = [...filteredGames].sort((a, b) => {
     const aFinal = a.state === 'post' || a.state === 'OFF' || a.state === 'FINAL';
     const bFinal = b.state === 'post' || b.state === 'OFF' || b.state === 'FINAL';
@@ -785,8 +809,7 @@ function renderDraftGamesBar() {
 
 function setGameFilter(gameId) {
   currentGameFilter = gameId;
-  currentPosFilter = 'all'; // reset position when switching game
-  // Rebuild position filters for the visible subset
+  currentPosFilter = 'all';
   let visible = availablePlayers;
   if (gameId !== 'all') visible = visible.filter(p => p.gameId === gameId);
   if (currentFilter !== 'all') visible = visible.filter(p => p.league === currentFilter);
@@ -818,6 +841,7 @@ function getLeagueSlots() {
 
 function renderPlayerPool() {
   const c = document.getElementById('playerPool');
+  const scrollTop = c.scrollTop; // preserve scroll position
   const search = (document.getElementById('playerSearch')?.value||'').toLowerCase();
   const banner = document.getElementById('waitingBanner');
   let filtered = availablePlayers;
@@ -826,7 +850,6 @@ function renderPlayerPool() {
   if (currentPosFilter !== 'all') filtered = filtered.filter(p => p.position === currentPosFilter);
   if (search) filtered = filtered.filter(p => p.name.toLowerCase().includes(search) || p.team.toLowerCase().includes(search) || (p.teamName||'').toLowerCase().includes(search));
   
-  // Check league slot limits for my roster
   const counts = getMyLeagueCounts();
   const slots = getLeagueSlots();
   const nbaFull = counts.nba >= (slots.nba || 99);
@@ -834,7 +857,6 @@ function renderPlayerPool() {
 
   banner.style.display = amIDrafting ? 'none' : 'block';
 
-  // Slot indicator
   const leagues = lobbyState?.settings?.leagues || 'both';
   let slotHTML = '';
   if (amIDrafting) {
@@ -870,6 +892,8 @@ function renderPlayerPool() {
   }).join('');
 
   if (!filtered.length) c.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-dim);">No players found</div>';
+
+  c.scrollTop = scrollTop; // restore scroll position
 }
 
 function getAvgLine(p) {
@@ -885,9 +909,7 @@ function getAvgLine(p) {
 }
 
 function notifyMyTurn() {
-  // Vibrate on mobile
   if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-  // Audio beep using Web Audio API
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = ctx.createOscillator();
@@ -902,9 +924,19 @@ function notifyMyTurn() {
   } catch(e) {}
 }
 
-function draftPlayer(playerId) { if (!amIDrafting) return; socket.emit('draftPick', { playerId }); closeModal(); }
+let draftPickPending = false;
+function draftPlayer(playerId) {
+  if (!amIDrafting || draftPickPending) return;
+  draftPickPending = true;
+  socket.emit('draftPick', { playerId });
+  closeModal();
+  // Reset after a short delay to prevent accidental double-picks
+  setTimeout(() => { draftPickPending = false; }, 2000);
+}
 
 // Player Detail Modal
+const gameLogClientCache = {};
+
 async function openPlayerModal(playerId) {
   const p = availablePlayers.find(pl => pl.id === playerId);
   if (!p) return;
@@ -913,7 +945,6 @@ async function openPlayerModal(playerId) {
   modal.classList.add('open');
   document.body.style.overflow = 'hidden';
 
-  // Header
   document.getElementById('modalHeader').innerHTML = `
     ${p.headshot ? `<img class="modal-photo" src="${p.headshot}" onerror="this.outerHTML='<div class=\\'modal-photo-placeholder\\'>${p.position}</div>'">`
       : `<div class="modal-photo-placeholder">${p.position}</div>`}
@@ -922,7 +953,6 @@ async function openPlayerModal(playerId) {
       <div class="modal-team-pos">${p.teamName || p.team} · ${p.position} · <span class="pc-tier ${p.tier||'bench'}" style="display:inline;">${p.tierLabel||'⚪ Bench'}</span></div>
     </div>`;
 
-  // Season averages
   const a = p.seasonAvg || {};
   let avgCells = '';
   if (p.league === 'nba') {
@@ -945,11 +975,9 @@ async function openPlayerModal(playerId) {
       { val: a.shotsOnGoal||0, label: 'SOG/G' },
     ].map(s => `<div class="modal-avg-cell"><div class="modal-avg-val">${s.val}</div><div class="modal-avg-label">${s.label}</div></div>`).join('');
   }
-  // Add projected score cell
   avgCells += `<div class="modal-avg-cell" style="border-color:rgba(255,87,34,0.3);"><div class="modal-avg-val" style="color:var(--accent);">${p.projectedScore||0}</div><div class="modal-avg-label">Proj FPts</div></div>`;
   document.getElementById('modalAvgGrid').innerHTML = avgCells;
 
-  // Draft bar - check league slot limits
   const counts = getMyLeagueCounts();
   const slots = getLeagueSlots();
   const leagueFull = (p.league === 'nba' && counts.nba >= (slots.nba || 99)) ||
@@ -965,53 +993,63 @@ async function openPlayerModal(playerId) {
   }
   document.getElementById('modalDraftBar').innerHTML = draftBarHTML;
 
-  // Game log - fetch async
+  // Game log — use client-side cache
   const logBody = document.getElementById('modalGameLogBody');
+  const athleteId = p.athleteId || p.id.replace('nba-','').replace('nhl-','');
+  const cacheKey = `${p.league}-${athleteId}`;
+
+  if (gameLogClientCache[cacheKey] && Date.now() - gameLogClientCache[cacheKey].ts < 600000) {
+    renderGameLog(logBody, gameLogClientCache[cacheKey].data, p);
+    return;
+  }
+
   logBody.innerHTML = '<div class="modal-loading">Loading game log...</div>';
 
   try {
-    const athleteId = p.athleteId || p.id.replace('nba-','').replace('nhl-','');
     const res = await fetch(`/api/gamelog/${p.league}/${athleteId}`);
     const data = await res.json();
-
-    if (!data.games || data.games.length === 0) {
-      logBody.innerHTML = '<div class="modal-loading" style="color:var(--text-dim);">No recent games found</div>';
-      return;
-    }
-
-    logBody.innerHTML = data.games.map(g => {
-      let statLine = '', fpts = 0;
-      if (p.league === 'nba') {
-        const s = g.stats;
-        statLine = `${s.points}p ${s.rebounds}r ${s.assists}a ${s.steals}s ${s.blocks}b`;
-        fpts = (s.points*1) + (s.rebounds*1.5) + (s.assists*2) + (s.steals*3) + (s.blocks*3);
-        // Bonuses
-        const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
-        if (cats.length >= 3) fpts += 10;
-        else if (cats.length >= 2) fpts += 5;
-      } else {
-        const s = g.stats;
-        if (s.saves !== undefined) {
-          statLine = `${s.saves}sv ${s.goalsAgainst}ga ${s.savePct||''}`;
-          fpts = (s.saves||0)*0.5;
-          if ((s.goalsAgainst||0) === 0 && (s.saves||0) > 0) fpts += 5;
-        } else {
-          statLine = `${s.goals}g ${s.assists}a ${s.shotsOnGoal||0}sog`;
-          fpts = (s.goals||0)*5 + (s.assists||0)*3 + (s.shotsOnGoal||0)*1;
-          if ((s.goals||0) >= 3) fpts += 3;
-        }
-      }
-      fpts = Math.round(fpts * 10) / 10;
-      return `<div class="modal-gamelog-row">
-        <div class="modal-gl-date">${g.date}</div>
-        <div class="modal-gl-opp">${g.opponent}</div>
-        <div class="modal-gl-stats">${statLine}</div>
-        <div class="modal-gl-fpts">${fpts}</div>
-      </div>`;
-    }).join('');
+    gameLogClientCache[cacheKey] = { data, ts: Date.now() };
+    renderGameLog(logBody, data, p);
   } catch (e) {
     logBody.innerHTML = '<div class="modal-loading" style="color:var(--text-dim);">Could not load game log</div>';
   }
+}
+
+function renderGameLog(container, data, player) {
+  if (!data.games || data.games.length === 0) {
+    container.innerHTML = '<div class="modal-loading" style="color:var(--text-dim);">No recent games found</div>';
+    return;
+  }
+
+  container.innerHTML = data.games.map(g => {
+    let statLine = '', fpts = 0;
+    if (player.league === 'nba') {
+      const s = g.stats;
+      statLine = `${s.points}p ${s.rebounds}r ${s.assists}a ${s.steals}s ${s.blocks}b`;
+      fpts = (s.points*1) + (s.rebounds*1.5) + (s.assists*2) + (s.steals*3) + (s.blocks*3);
+      const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
+      if (cats.length >= 3) fpts += 10;
+      else if (cats.length >= 2) fpts += 5;
+    } else {
+      const s = g.stats;
+      if (s.saves !== undefined) {
+        statLine = `${s.saves}sv ${s.goalsAgainst}ga ${s.savePct||''}`;
+        fpts = (s.saves||0)*0.5;
+        if ((s.goalsAgainst||0) === 0 && (s.saves||0) > 0) fpts += 5;
+      } else {
+        statLine = `${s.goals}g ${s.assists}a ${s.shotsOnGoal||0}sog`;
+        fpts = (s.goals||0)*5 + (s.assists||0)*3 + (s.shotsOnGoal||0)*1;
+        if ((s.goals||0) >= 3) fpts += 3;
+      }
+    }
+    fpts = Math.round(fpts * 10) / 10;
+    return `<div class="modal-gamelog-row">
+      <div class="modal-gl-date">${g.date}</div>
+      <div class="modal-gl-opp">${g.opponent}</div>
+      <div class="modal-gl-stats">${statLine}</div>
+      <div class="modal-gl-fpts">${fpts}</div>
+    </div>`;
+  }).join('');
 }
 
 function closeModal() {
@@ -1020,7 +1058,6 @@ function closeModal() {
   document.body.style.overflow = '';
 }
 
-// Close modal on Escape key
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeModal();
 });
@@ -1059,40 +1096,29 @@ function addDraftLog(pickerName, player, autoPick) {
 function updateLeagueFilterVisibility() {
   const leagues = lobbyState?.settings?.leagues || 'both';
   const filterRow = document.getElementById('leagueFilterRow');
-  const filterAll = document.getElementById('filterAll');
-  const filterNba = document.getElementById('filterNba');
-  const filterNhl = document.getElementById('filterNhl');
   if (!filterRow) return;
-  if (leagues === 'nba') {
-    // NBA only - hide the filter row entirely since there's only one league
-    filterRow.style.display = 'none';
-    currentFilter = 'all'; // reset to show all (which is only NBA)
-  } else if (leagues === 'nhl') {
-    // NHL only - hide the filter row entirely
+  if (leagues === 'nba' || leagues === 'nhl') {
     filterRow.style.display = 'none';
     currentFilter = 'all';
   } else {
-    // Both - show all filters
     filterRow.style.display = 'flex';
   }
 }
 
 function setFilter(filter, btn) {
   currentFilter = filter;
-  currentPosFilter = 'all'; // reset pos when switching league
+  currentPosFilter = 'all';
   document.querySelectorAll('#draftPool .filter-chip').forEach(b => b.classList.remove('active','active-nhl'));
   btn.classList.add(filter === 'nhl' ? 'active-nhl' : 'active');
-  // Rebuild position filters for visible players
   let visible = availablePlayers;
   if (currentGameFilter !== 'all') visible = visible.filter(p => p.gameId === currentGameFilter);
   if (filter !== 'all') visible = visible.filter(p => p.league === filter);
   buildPositionFilters(visible);
-  renderDraftGamesBar(); // re-render games bar to reflect league filter
+  renderDraftGamesBar();
   filterPlayers();
 }
 function filterPlayers() { renderPlayerPool(); }
 
-// Track previous scores for animations
 let prevScores = {};
 
 function renderLive(players, state) {
@@ -1108,15 +1134,12 @@ function renderLive(players, state) {
     renderRankList(players, state);
   }
 
-  // Store scores for delta animations
   players.forEach(p => { prevScores[p.id] = p.totalScore || 0; });
 }
 
 function renderMatchup(players, state) {
-  // Figure out which is "me" and which is opponent
   let me = players.find(p => p.id === mySessionId);
   let opp = players.find(p => p.id !== mySessionId);
-  // If spectating, just use order
   if (!me) { me = players[0]; opp = players[1]; }
 
   const myScore = me.totalScore || 0;
@@ -1126,7 +1149,6 @@ function renderMatchup(players, state) {
   const myState = diff > 0 ? 'leading' : diff < 0 ? 'trailing' : 'tied';
   const oppState = diff < 0 ? 'leading' : diff > 0 ? 'trailing' : 'tied';
 
-  // Matchup header
   document.getElementById('mp-left').innerHTML = `
     <div class="mp-name ${me.id === mySessionId ? 'is-you' : ''}">${me.name}</div>
     <div class="mp-score ${myState}" id="score-${me.id}">${myScore}</div>
@@ -1137,7 +1159,6 @@ function renderMatchup(players, state) {
     <div class="mp-score ${oppState}" id="score-${opp.id}">${oppScore}</div>
     <div class="mp-label">PTS</div>`;
 
-  // Diff pill
   const diffEl = document.getElementById('matchupDiff');
   if (diff === 0) {
     diffEl.innerHTML = `<span class="diff-pill tied-pill">TIED</span>`;
@@ -1147,7 +1168,6 @@ function renderMatchup(players, state) {
     diffEl.innerHTML = `<span class="diff-pill ${isWinning ? 'winning' : 'losing'}">${isWinning ? '+' : '-'}${absDiff}</span>`;
   }
 
-  // Score pop animation
   [me, opp].forEach(p => {
     if (prevScores[p.id] !== undefined && prevScores[p.id] !== (p.totalScore || 0)) {
       const el = document.getElementById(`score-${p.id}`);
@@ -1155,7 +1175,6 @@ function renderMatchup(players, state) {
     }
   });
 
-  // Rosters
   const av = ['avatar-1','avatar-2','avatar-3','avatar-4','avatar-5'];
   const c = document.getElementById('matchupRosters');
   c.innerHTML = [me, opp].map((p, idx) => {
@@ -1276,7 +1295,6 @@ function renderStatGrid(pick) {
       </div>`;
     }).join('');
 
-    // Check bonuses
     const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
     if (cats.length >= 3) bonuses.push('Triple-Double +10');
     else if (cats.length >= 2) bonuses.push('Double-Double +5');

@@ -66,10 +66,6 @@ const NHL_ROSTER_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
 const nbaRosterCache = new Map();
 const NBA_ROSTER_CACHE_TTL = 6 * 60 * 60 * 1000;
 
-// Game log cache
-const gameLogCache = new Map();
-const GAMELOG_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
-
 // ⭐ ENRICHED PLAYER POOL CACHE — THE KEY OPTIMIZATION ⭐
 // Stores fully enriched player pools by date+league, so multiple drafts reuse the same data
 // Cache key format: "YYYY-MM-DD:league" (e.g., "2026-02-05:both", "2026-02-05:nba")
@@ -91,7 +87,6 @@ const PERSISTENT_CACHES = {
   nbaPlayerStats:  { cache: nbaPlayerStatsCache, ttl: NBA_STATS_CACHE_TTL },
   nhlRoster:       { cache: nhlRosterCache,      ttl: NHL_ROSTER_CACHE_TTL },
   nbaRoster:       { cache: nbaRosterCache,      ttl: NBA_ROSTER_CACHE_TTL },
-  gameLog:         { cache: gameLogCache,         ttl: GAMELOG_CACHE_TTL },
   enrichedPool:    { cache: enrichedPoolCache,    ttl: ENRICHED_POOL_TTL },  // ⭐ NEW
 };
 
@@ -486,6 +481,7 @@ async function fetchNBAPlayersForGames(games) {
             position: athlete.position?.abbreviation || 'N/A',
             gameId: game.gameId,
             headshot: athlete.headshot?.href || null,
+            injuryStatus: athlete.injuries?.[0]?.status || null, // e.g., "Out", "Questionable", "Probable"
             stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
             fantasyScore: 0,
             seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
@@ -520,6 +516,7 @@ async function fetchNBAPlayersForGames(games) {
                   position: athlete.position?.abbreviation || 'N/A',
                   gameId: game.gameId,
                   headshot: athlete.headshot?.href || null,
+                  injuryStatus: athlete.injuries?.[0]?.status || null,
                   stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
                   fantasyScore: 0,
                   seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
@@ -1009,179 +1006,6 @@ async function getOrBuildEnrichedPlayerPool(dateStr, leagues) {
 }
 
 // ============================================
-// GAME LOG ENDPOINTS
-// ============================================
-function getCachedGameLog(league, athleteId) {
-  return getCached(gameLogCache, `${league}-${athleteId}`, GAMELOG_CACHE_TTL);
-}
-
-function setCachedGameLog(league, athleteId, data) {
-  setCache(gameLogCache, `${league}-${athleteId}`, data, 500);
-}
-
-async function fetchNBAGameLog(athleteId) {
-  const cached = getCachedGameLog('nba', athleteId);
-  if (cached) return cached;
-
-  const games = [];
-
-  // Strategy 1: ESPN athlete stats endpoint
-  try {
-    const data = await fetchWithRetry(
-      `https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/stats`,
-      { label: `NBA gamelog ${athleteId}`, maxRetries: 1 }
-    );
-    if (data) {
-      const categories = data.categories || [];
-      for (const cat of categories) {
-        if (cat.type === 'gameLog' || cat.name === 'gameLog') {
-          const labels = cat.labels || [];
-          const events = cat.events || [];
-          const ptsIdx = labels.indexOf('PTS');
-          const rebIdx = labels.indexOf('REB');
-          const astIdx = labels.indexOf('AST');
-          const stlIdx = labels.indexOf('STL');
-          const blkIdx = labels.indexOf('BLK');
-          const minIdx = labels.indexOf('MIN');
-          const last3 = events.slice(-3).reverse();
-          for (const evt of last3) {
-            const stats = evt.stats || [];
-            games.push({
-              date: evt.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
-              opponent: formatOpponent(evt),
-              stats: {
-                points: parseInt(stats[ptsIdx]) || 0,
-                rebounds: parseInt(stats[rebIdx]) || 0,
-                assists: parseInt(stats[astIdx]) || 0,
-                steals: parseInt(stats[stlIdx]) || 0,
-                blocks: parseInt(stats[blkIdx]) || 0,
-                minutes: stats[minIdx] || '0'
-              }
-            });
-          }
-          if (games.length > 0) break;
-        }
-      }
-    }
-  } catch (e) {
-    console.log(`NBA stats endpoint failed for ${athleteId}: ${e.message}`);
-  }
-
-  // Strategy 2: ESPN gamelog endpoint
-  if (games.length === 0) {
-    try {
-      const data = await fetchWithRetry(
-        `https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/gamelog`,
-        { label: `NBA gamelog2 ${athleteId}`, maxRetries: 1 }
-      );
-      if (data) {
-        let events = data.events || {};
-        let labels = [];
-        let statsByEvent = {};
-        const allCategories = [];
-        if (data.categories) allCategories.push(...data.categories);
-        if (data.seasonTypes) {
-          for (const season of data.seasonTypes) {
-            if (season.categories) allCategories.push(...season.categories);
-            if (season.events) {
-              for (const [eid, evtData] of Object.entries(season.events)) {
-                if (!events[eid]) events[eid] = evtData;
-              }
-            }
-          }
-        }
-        for (const cat of allCategories) {
-          if (cat.events && cat.labels) {
-            labels = cat.labels;
-            for (const evt of cat.events) {
-              const eid = evt.eventId || evt.id;
-              if (eid && evt.stats && evt.stats.length > 0) {
-                statsByEvent[eid] = evt.stats;
-              }
-            }
-          }
-        }
-        const eventsWithStats = Object.keys(statsByEvent);
-        const last3 = eventsWithStats.slice(-3).reverse();
-        const ptsIdx = labels.indexOf('PTS');
-        const rebIdx = labels.indexOf('REB');
-        const astIdx = labels.indexOf('AST');
-        const stlIdx = labels.indexOf('STL');
-        const blkIdx = labels.indexOf('BLK');
-        const minIdx = labels.indexOf('MIN');
-        for (const evtId of last3) {
-          const evt = events[evtId] || {};
-          const stats = statsByEvent[evtId] || [];
-          games.push({
-            date: evt.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
-            opponent: formatOpponent(evt),
-            stats: {
-              points: parseInt(stats[ptsIdx]) || 0,
-              rebounds: parseInt(stats[rebIdx]) || 0,
-              assists: parseInt(stats[astIdx]) || 0,
-              steals: parseInt(stats[stlIdx]) || 0,
-              blocks: parseInt(stats[blkIdx]) || 0,
-              minutes: stats[minIdx] || '0'
-            }
-          });
-        }
-      }
-    } catch (e) {
-      console.log(`NBA gamelog endpoint failed for ${athleteId}: ${e.message}`);
-    }
-  }
-
-  setCachedGameLog('nba', athleteId, games);
-  return games;
-}
-
-function formatOpponent(evt) {
-  if (!evt || !evt.opponent) return '?';
-  const prefix = evt.atVs === '@' || evt.homeAway === 'away' ? '@' : 'vs';
-  return `${prefix} ${evt.opponent.abbreviation || evt.opponent.displayName || '?'}`;
-}
-
-async function fetchNHLGameLog(playerId) {
-  const cached = getCachedGameLog('nhl', playerId);
-  if (cached) return cached;
-
-  try {
-    const data = await fetchWithRetry(
-      `https://api-web.nhle.com/v1/player/${playerId}/game-log/now`,
-      { label: `NHL gamelog ${playerId}` }
-    );
-    if (!data) return [];
-    
-    const gameLog = data.gameLog || [];
-    const last3 = gameLog.slice(0, 3);
-    
-    const games = last3.map(g => ({
-      date: new Date(g.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      opponent: `${g.homeRoadFlag === 'H' ? 'vs' : '@'} ${g.opponentAbbrev || '?'}`,
-      stats: g.goals !== undefined ? {
-        goals: g.goals || 0,
-        assists: g.assists || 0,
-        points: g.points || 0,
-        shotsOnGoal: g.shots || 0,
-        plusMinus: g.plusMinus || 0,
-        toi: g.toi || '0:00'
-      } : {
-        saves: g.savePctg ? Math.round((g.shotsAgainst || 0) * (g.savePctg || 0)) : (g.saves || 0),
-        goalsAgainst: g.goalsAgainst || 0,
-        savePct: g.savePctg ? (g.savePctg * 100).toFixed(1) + '%' : '0%',
-        toi: g.toi || '0:00'
-      }
-    }));
-
-    setCachedGameLog('nhl', playerId, games);
-    return games;
-  } catch (e) {
-    console.error(`Error fetching NHL game log for ${playerId}:`, e.message);
-    return [];
-  }
-}
-
-// ============================================
 // LIVE SCORING
 // ============================================
 async function fetchLiveNBAStats(gameId) {
@@ -1517,8 +1341,14 @@ io.on('connection', (socket) => {
     if (settings.isPublic !== undefined) {
       lobby.isPublic = settings.isPublic;
       const idx = publicLobbies.indexOf(lobby.id);
-      if (settings.isPublic && idx === -1) publicLobbies.push(lobby.id);
-      if (!settings.isPublic && idx !== -1) publicLobbies.splice(idx, 1);
+      if (settings.isPublic && idx === -1) {
+        publicLobbies.push(lobby.id);
+        console.log(`Lobby ${lobby.id} is now public`);
+      }
+      if (!settings.isPublic && idx !== -1) {
+        publicLobbies.splice(idx, 1);
+        console.log(`Lobby ${lobby.id} is now private`);
+      }
     }
     if (settings.draftType) lobby.settings.draftType = settings.draftType;
     if (settings.timePerPick) lobby.settings.timePerPick = Math.min(Math.max(settings.timePerPick, 10), 120);
@@ -1975,24 +1805,6 @@ app.get('/api/scoring', (req, res) => {
   res.json(SCORING);
 });
 
-app.get('/api/gamelog/:league/:athleteId', async (req, res) => {
-  const { league, athleteId } = req.params;
-  try {
-    let games;
-    if (league === 'nba') {
-      games = await fetchNBAGameLog(athleteId);
-    } else if (league === 'nhl') {
-      games = await fetchNHLGameLog(athleteId);
-    } else {
-      return res.status(400).json({ error: 'Invalid league' });
-    }
-    res.json({ games, league });
-  } catch (e) {
-    console.error(`Game log error for ${league}/${athleteId}:`, e.message);
-    res.status(500).json({ error: 'Failed to fetch game log' });
-  }
-});
-
 // Cache stats endpoint — for debugging/monitoring
 app.get('/api/cache-stats', (req, res) => {
   const cacheFileExists = fs.existsSync(CACHE_FILE);
@@ -2020,7 +1832,6 @@ app.get('/api/cache-stats', (req, res) => {
       nhlPlayerStats: nhlPlayerStatsCache.size,
       nbaPlayerStats: nbaPlayerStatsCache.size,
       schedule: scheduleCache.size,
-      gameLog: gameLogCache.size,
       boxscore: boxscoreCache.size,
       nhlRoster: nhlRosterCache.size,
       nbaRoster: nbaRosterCache.size,

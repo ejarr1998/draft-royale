@@ -16,198 +16,68 @@ function getSessionId() {
 mySessionId = getSessionId();
 
 // Active game state persistence
-// ============================================
-// MULTI-GAME MANAGEMENT
-// ============================================
-
 function saveActiveGame(lobbyId, phase, playerName) {
-  const games = getActiveGames();
-  games[lobbyId] = {
-    lobbyId, 
-    phase, 
-    playerName, 
-    sessionId: mySessionId, 
-    savedAt: Date.now()
-  };
-  localStorage.setItem('dr_activeGames', JSON.stringify(games));
+  localStorage.setItem('dr_activeGame', JSON.stringify({
+    lobbyId, phase, playerName, sessionId: mySessionId, savedAt: Date.now()
+  }));
 }
-
-function getActiveGames() {
-  try {
-    const data = JSON.parse(localStorage.getItem('dr_activeGames'));
-    if (!data) return {};
-    const now = Date.now();
-    const fiveHours = 5 * 60 * 60 * 1000;
-    // Filter out stale games (>5 hours old)
-    const filtered = {};
-    for (const [lobbyId, game] of Object.entries(data)) {
-      if (now - game.savedAt < fiveHours) {
-        filtered[lobbyId] = game;
-      }
-    }
-    localStorage.setItem('dr_activeGames', JSON.stringify(filtered));
-    return filtered;
-  } catch { return {}; }
-}
-
 function getActiveGame() {
-  // For backwards compatibility - returns current lobby or first game
-  const games = getActiveGames();
-  if (myLobbyId && games[myLobbyId]) return games[myLobbyId];
-  const gameList = Object.values(games);
-  return gameList.length > 0 ? gameList[0] : null;
+  try {
+    const data = JSON.parse(localStorage.getItem('dr_activeGame'));
+    if (!data) return null;
+    if (Date.now() - data.savedAt > 5 * 60 * 60 * 1000) {
+      clearActiveGame();
+      return null;
+    }
+    return data;
+  } catch { return null; }
 }
-
-function clearActiveGame(lobbyId = null) {
-  const games = getActiveGames();
-  if (lobbyId) {
-    delete games[lobbyId];
-  } else if (myLobbyId) {
-    delete games[myLobbyId];
-  }
-  localStorage.setItem('dr_activeGames', JSON.stringify(games));
+function clearActiveGame() {
+  localStorage.removeItem('dr_activeGame');
 }
-
 function updateActiveGamePhase(phase) {
-  if (!myLobbyId) return;
-  const games = getActiveGames();
-  if (games[myLobbyId]) {
-    games[myLobbyId].phase = phase;
-    games[myLobbyId].savedAt = Date.now();
-    localStorage.setItem('dr_activeGames', JSON.stringify(games));
-  }
+  const ag = getActiveGame();
+  if (ag) { ag.phase = phase; ag.savedAt = Date.now(); localStorage.setItem('dr_activeGame', JSON.stringify(ag)); }
 }
 
-// Render active games lobby on home screen
+// Check for active game and show banner on home screen
 function renderActiveGameBanner() {
   const banner = document.getElementById('activeGameBanner');
-  const games = getActiveGames();
-  const gameList = Object.values(games);
-  
-  if (gameList.length === 0) {
-    banner.style.display = 'none';
-    return;
-  }
-  
-  banner.style.display = 'block';
-  
-  if (gameList.length === 1) {
-    // Single game - show old style banner
-    const ag = gameList[0];
-    const phaseLabel = ag.phase === 'waiting' ? '⏳ In Lobby' :
-                       ag.phase === 'drafting' ? '⚔️ Drafting' :
-                       ag.phase === 'live' ? '🔴 Live' :
-                       ag.phase === 'finished' ? '✅ Finished' : '🎮 Active';
-    banner.innerHTML = `
-      <div class="active-game-banner" onclick="rejoinActiveGame('${ag.lobbyId}')">
-        <div class="agb-pip"></div>
-        <div class="agb-info">
-          <div class="agb-title">${phaseLabel} — Room ${ag.lobbyId}</div>
-          <div class="agb-sub">Playing as ${ag.playerName}</div>
-        </div>
-        <button class="agb-btn" onclick="event.stopPropagation(); rejoinActiveGame('${ag.lobbyId}')">REJOIN</button>
-        <button class="agb-leave" onclick="event.stopPropagation(); abandonGame('${ag.lobbyId}')">✕</button>
-      </div>`;
-  } else {
-    // Multiple games - show games lobby
-    const liveCount = gameList.filter(g => g.phase === 'live').length;
-    const draftingCount = gameList.filter(g => g.phase === 'drafting').length;
-    
-    banner.innerHTML = `
-      <div class="active-games-lobby" onclick="showGamesLobby()">
-        <div class="agl-pip"></div>
-        <div class="agl-info">
-          <div class="agl-title">🎮 ${gameList.length} Active Games</div>
-          <div class="agl-sub">${liveCount} Live • ${draftingCount} Drafting</div>
-        </div>
-        <button class="agl-btn" onclick="event.stopPropagation(); showGamesLobby()">VIEW ALL</button>
-      </div>`;
+  const ag = getActiveGame();
+  if (!ag) { banner.style.display = 'none'; return; }
+  const phaseLabel = ag.phase === 'waiting' ? '⏳ In Lobby' :
+                     ag.phase === 'drafting' ? '⚔️ Drafting' :
+                     ag.phase === 'live' ? '🔴 Live' :
+                     ag.phase === 'finished' ? '✅ Finished' : '🎮 Active';
+  banner.style.display = 'flex';
+  banner.innerHTML = `
+    <div class="active-game-banner" onclick="rejoinActiveGame()">
+      <div class="agb-pip"></div>
+      <div class="agb-info">
+        <div class="agb-title">${phaseLabel} — Room ${ag.lobbyId}</div>
+        <div class="agb-sub">Playing as ${ag.playerName}</div>
+      </div>
+      <button class="agb-btn" onclick="event.stopPropagation(); rejoinActiveGame()">REJOIN</button>
+      <button class="agb-leave" onclick="event.stopPropagation(); abandonGame()">✕</button>
+    </div>`;
 }
 
-function rejoinActiveGame(lobbyId = null) {
-  const games = getActiveGames();
-  const targetLobby = lobbyId || myLobbyId || Object.keys(games)[0];
-  const game = games[targetLobby];
-  
-  if (!game) return;
-  
-  mySessionId = game.sessionId;
+function rejoinActiveGame() {
+  const ag = getActiveGame();
+  if (!ag) return;
+  mySessionId = ag.sessionId;
   localStorage.setItem('dr_sessionId', mySessionId);
   socket.emit('rejoin', { sessionId: mySessionId });
 }
 
-function abandonGame(lobbyId = null) {
-  const targetLobby = lobbyId || myLobbyId;
+function abandonGame() {
   if (!confirm('Leave this game? You won\'t be able to rejoin.')) return;
-  
-  clearActiveGame(targetLobby);
-  
-  // If abandoning current lobby, reset session
-  if (targetLobby === myLobbyId) {
-    mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
-    localStorage.setItem('dr_sessionId', mySessionId);
-    myLobbyId = null;
-    isHost = false;
-  }
-  
+  clearActiveGame();
+  mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
+  localStorage.setItem('dr_sessionId', mySessionId);
+  myLobbyId = null; isHost = false;
   renderActiveGameBanner();
   showToast('Left the game');
-}
-
-function showGamesLobby() {
-  const games = getActiveGames();
-  const gameList = Object.values(games).sort((a, b) => {
-    // Sort: live first, then drafting, then waiting, then finished
-    const order = { live: 0, drafting: 1, waiting: 2, finished: 3 };
-    return (order[a.phase] || 4) - (order[b.phase] || 4);
-  });
-  
-  const modal = document.getElementById('gamesLobbyModal');
-  const container = document.getElementById('gamesLobbyList');
-  
-  container.innerHTML = gameList.map(game => {
-    const phaseEmoji = {
-      waiting: '⏳',
-      drafting: '⚔️',
-      live: '🔴',
-      finished: '✅'
-    }[game.phase] || '🎮';
-    
-    const phaseLabel = {
-      waiting: 'In Lobby',
-      drafting: 'Drafting',
-      live: 'Live',
-      finished: 'Finished'
-    }[game.phase] || 'Active';
-    
-    const phaseClass = game.phase || 'waiting';
-    
-    return `
-      <div class="game-lobby-card ${phaseClass}" onclick="rejoinActiveGame('${game.lobbyId}')">
-        <div class="glc-status">
-          <div class="glc-emoji">${phaseEmoji}</div>
-          <div class="glc-phase">${phaseLabel}</div>
-        </div>
-        <div class="glc-info">
-          <div class="glc-room">Room ${game.lobbyId}</div>
-          <div class="glc-player">${game.playerName}</div>
-        </div>
-        <button class="glc-join-btn" onclick="event.stopPropagation(); rejoinActiveGame('${game.lobbyId}')">
-          ${game.phase === 'live' ? '👁️ WATCH' : game.phase === 'finished' ? '📊 RESULTS' : '▶️ REJOIN'}
-        </button>
-        <button class="glc-leave-btn" onclick="event.stopPropagation(); abandonGame('${game.lobbyId}')">✕</button>
-      </div>
-    `;
-  }).join('');
-  
-  modal.classList.add('visible');
-  document.body.style.overflow = 'hidden';
-}
-
-function closeGamesLobby() {
-  const modal = document.getElementById('gamesLobbyModal');
-  modal.classList.remove('visible');
-  document.body.style.overflow = '';
 }
 
 socket.on('connect', () => {
@@ -279,8 +149,20 @@ socket.on('rejoinState', (data) => {
     renderPlayerPool();
     showToast('Reconnected to draft!');
   } else if (data.phase === 'live' || data.phase === 'finished') {
-    // Redirect to new live.html page
-    window.location.href = `/live.html?lobby=${data.lobby.id}`;
+    showScreen('liveScreen');
+    renderLive(data.players, data.phase);
+    if (data.phase === 'finished') {
+      const bar = document.getElementById('liveBar');
+      bar.classList.add('finished');
+      bar.querySelector('.live-pip-label').textContent = 'Final';
+      const sorted = [...data.players].sort((a, b) => b.totalScore - a.totalScore);
+      if (sorted.length) {
+        document.getElementById('winnerBanner').style.display = 'block';
+        document.getElementById('winnerName').textContent = `${sorted[0].name} Wins!`;
+        document.getElementById('winnerScore').textContent = `${sorted[0].totalScore} fantasy points`;
+      }
+    }
+    showToast('Reconnected to game!');
   }
 });
 
@@ -502,12 +384,6 @@ function togglePublic() {
   lobbySettings.isPublic = !lobbySettings.isPublic;
   document.getElementById('publicToggle').classList.toggle('on');
   onSettingsChanged();
-  // Send to server immediately when toggling public status
-  if (isHost && myLobbyId) {
-    socket.emit('updateSettings', { 
-      settings: { isPublic: lobbySettings.isPublic } 
-    });
-  }
 }
 
 // Sync all UI controls to match lobbySettings (used on reconnect)
@@ -808,13 +684,28 @@ function renderRecap(players) {
 }
 
 function goToLive() {
-  // Redirect to new live.html page
-  window.location.href = `/live.html?lobby=${myLobbyId}`;
+  showScreen('liveScreen');
+  if (pendingLivePlayers) renderLive(pendingLivePlayers, 'live');
 }
 
 socket.on('scoreUpdate', ({ players, state }) => {
-  // Score updates handled by live.html page
-  // This event is only relevant if user is still on old screens
+  pendingLivePlayers = players;
+  const activeScreen = document.querySelector('.screen.active');
+  if (activeScreen && activeScreen.id === 'liveScreen') {
+    renderLive(players, state);
+  }
+  if (state === 'finished') {
+    updateActiveGamePhase('finished');
+    const bar = document.getElementById('liveBar');
+    bar.classList.add('finished');
+    bar.querySelector('.live-pip-label').textContent = 'Final';
+    const sorted = [...players].sort((a, b) => b.totalScore - a.totalScore);
+    if (sorted.length) {
+      document.getElementById('winnerBanner').style.display = 'block';
+      document.getElementById('winnerName').textContent = `${sorted[0].name} Wins!`;
+      document.getElementById('winnerScore').textContent = `${sorted[0].totalScore} fantasy points`;
+    }
+  }
 });
 
 socket.on('error', ({ message }) => { hideDraftLoading(); showToast(message, true); });
@@ -1004,16 +895,6 @@ function renderPlayerPool() {
     const tierLabel = p.tierLabel || '⚪ Bench';
     const leagueFull = (p.league === 'nba' && nbaFull) || (p.league === 'nhl' && nhlFull);
     const isLocked = !amIDrafting || leagueFull;
-    
-    // Injury badge if present
-    let injuryBadge = '';
-    if (p.injuryStatus) {
-      const statusClass = p.injuryStatus.toLowerCase() === 'out' ? 'inj-out' : 
-                         p.injuryStatus.toLowerCase().includes('questionable') ? 'inj-questionable' : 
-                         'inj-probable';
-      injuryBadge = `<span class="pc-injury ${statusClass}">${p.injuryStatus}</span>`;
-    }
-    
     return `
     <div class="player-card ${p.league} ${isLocked?'disabled':''} ${leagueFull?'league-full':''}" onclick="${leagueFull?'':`openPlayerModal('${p.id}')`}">
       ${p.headshot?`<img class="pc-photo" src="${p.headshot}" onerror="this.outerHTML='<div class=\\'pc-photo-placeholder\\'><span class=\\'pc-pos-badge\\'>${p.position}</span></div>'">`:`<div class="pc-photo-placeholder"><span class="pc-pos-badge">${p.position}</span></div>`}
@@ -1021,7 +902,6 @@ function renderPlayerPool() {
         <div class="pc-name">${p.name}</div>
         <div class="pc-meta"><div class="pc-league-dot ${p.league}"></div><span class="pc-team">${p.team} · ${p.position}</span></div>
         <div class="pc-avgs">${avgLine}</div>
-        ${injuryBadge}
       </div>
       <div class="pc-right">
         <div class="pc-proj">${p.projectedScore || 0}</div>
@@ -1075,6 +955,8 @@ function draftPlayer(playerId) {
 }
 
 // Player Detail Modal
+const gameLogClientCache = {};
+
 async function openPlayerModal(playerId) {
   const p = availablePlayers.find(pl => pl.id === playerId);
   if (!p) return;
@@ -1116,23 +998,6 @@ async function openPlayerModal(playerId) {
   avgCells += `<div class="modal-avg-cell" style="border-color:rgba(255,87,34,0.3);"><div class="modal-avg-val" style="color:var(--accent);">${p.projectedScore||0}</div><div class="modal-avg-label">Proj FPts</div></div>`;
   document.getElementById('modalAvgGrid').innerHTML = avgCells;
 
-  // Show injury status if present
-  const injurySection = document.getElementById('modalInjuryStatus');
-  if (p.injuryStatus) {
-    const statusClass = p.injuryStatus.toLowerCase() === 'out' ? 'injury-out' : 
-                       p.injuryStatus.toLowerCase().includes('questionable') ? 'injury-questionable' : 
-                       'injury-probable';
-    injurySection.style.display = 'block';
-    injurySection.innerHTML = `
-      <div class="injury-banner ${statusClass}">
-        <span class="injury-icon">⚠️</span>
-        <span class="injury-text">${p.injuryStatus}</span>
-      </div>
-    `;
-  } else {
-    injurySection.style.display = 'none';
-  }
-
   const counts = getMyLeagueCounts();
   const slots = getLeagueSlots();
   const leagueFull = (p.league === 'nba' && counts.nba >= (slots.nba || 99)) ||
@@ -1147,6 +1012,64 @@ async function openPlayerModal(playerId) {
     draftBarHTML = `<button class="btn btn-hero" onclick="draftPlayer('${p.id}')">⚔️ DRAFT ${p.name.split(' ').pop().toUpperCase()}</button>`;
   }
   document.getElementById('modalDraftBar').innerHTML = draftBarHTML;
+
+  // Game log — use client-side cache
+  const logBody = document.getElementById('modalGameLogBody');
+  const athleteId = p.athleteId || p.id.replace('nba-','').replace('nhl-','');
+  const cacheKey = `${p.league}-${athleteId}`;
+
+  if (gameLogClientCache[cacheKey] && Date.now() - gameLogClientCache[cacheKey].ts < 600000) {
+    renderGameLog(logBody, gameLogClientCache[cacheKey].data, p);
+    return;
+  }
+
+  logBody.innerHTML = '<div class="modal-loading">Loading game log...</div>';
+
+  try {
+    const res = await fetch(`/api/gamelog/${p.league}/${athleteId}`);
+    const data = await res.json();
+    gameLogClientCache[cacheKey] = { data, ts: Date.now() };
+    renderGameLog(logBody, data, p);
+  } catch (e) {
+    logBody.innerHTML = '<div class="modal-loading" style="color:var(--text-dim);">Could not load game log</div>';
+  }
+}
+
+function renderGameLog(container, data, player) {
+  if (!data.games || data.games.length === 0) {
+    container.innerHTML = '<div class="modal-loading" style="color:var(--text-dim);">No recent games found</div>';
+    return;
+  }
+
+  container.innerHTML = data.games.map(g => {
+    let statLine = '', fpts = 0;
+    if (player.league === 'nba') {
+      const s = g.stats;
+      statLine = `${s.points}p ${s.rebounds}r ${s.assists}a ${s.steals}s ${s.blocks}b`;
+      fpts = (s.points*1) + (s.rebounds*1.5) + (s.assists*2) + (s.steals*3) + (s.blocks*3);
+      const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
+      if (cats.length >= 3) fpts += 10;
+      else if (cats.length >= 2) fpts += 5;
+    } else {
+      const s = g.stats;
+      if (s.saves !== undefined) {
+        statLine = `${s.saves}sv ${s.goalsAgainst}ga ${s.savePct||''}`;
+        fpts = (s.saves||0)*0.5;
+        if ((s.goalsAgainst||0) === 0 && (s.saves||0) > 0) fpts += 5;
+      } else {
+        statLine = `${s.goals}g ${s.assists}a ${s.shotsOnGoal||0}sog`;
+        fpts = (s.goals||0)*5 + (s.assists||0)*3 + (s.shotsOnGoal||0)*1;
+        if ((s.goals||0) >= 3) fpts += 3;
+      }
+    }
+    fpts = Math.round(fpts * 10) / 10;
+    return `<div class="modal-gamelog-row">
+      <div class="modal-gl-date">${g.date}</div>
+      <div class="modal-gl-opp">${g.opponent}</div>
+      <div class="modal-gl-stats">${statLine}</div>
+      <div class="modal-gl-fpts">${fpts}</div>
+    </div>`;
+  }).join('');
 }
 
 function closeModal() {
@@ -1216,5 +1139,225 @@ function setFilter(filter, btn) {
 }
 function filterPlayers() { renderPlayerPool(); }
 
-// Old live screen code removed - now uses live.html
+let prevScores = {};
 
+function renderLive(players, state) {
+  const isH2H = players.length === 2;
+
+  if (isH2H) {
+    document.getElementById('matchupView').style.display = 'block';
+    document.getElementById('rankListView').style.display = 'none';
+    renderMatchup(players, state);
+  } else {
+    document.getElementById('matchupView').style.display = 'none';
+    document.getElementById('rankListView').style.display = 'block';
+    renderRankList(players, state);
+  }
+
+  players.forEach(p => { prevScores[p.id] = p.totalScore || 0; });
+}
+
+function renderMatchup(players, state) {
+  let me = players.find(p => p.id === mySessionId);
+  let opp = players.find(p => p.id !== mySessionId);
+  if (!me) { me = players[0]; opp = players[1]; }
+
+  const myScore = me.totalScore || 0;
+  const oppScore = opp.totalScore || 0;
+  const diff = myScore - oppScore;
+
+  const myState = diff > 0 ? 'leading' : diff < 0 ? 'trailing' : 'tied';
+  const oppState = diff < 0 ? 'leading' : diff > 0 ? 'trailing' : 'tied';
+
+  document.getElementById('mp-left').innerHTML = `
+    <div class="mp-name ${me.id === mySessionId ? 'is-you' : ''}">${me.name}</div>
+    <div class="mp-score ${myState}" id="score-${me.id}">${myScore}</div>
+    <div class="mp-label">PTS</div>`;
+
+  document.getElementById('mp-right').innerHTML = `
+    <div class="mp-name ${opp.id === mySessionId ? 'is-you' : ''}">${opp.name}</div>
+    <div class="mp-score ${oppState}" id="score-${opp.id}">${oppScore}</div>
+    <div class="mp-label">PTS</div>`;
+
+  const diffEl = document.getElementById('matchupDiff');
+  if (diff === 0) {
+    diffEl.innerHTML = `<span class="diff-pill tied-pill">TIED</span>`;
+  } else {
+    const absDiff = Math.abs(diff).toFixed(1);
+    const isWinning = (me.id === mySessionId && diff > 0) || (me.id !== mySessionId && diff > 0);
+    diffEl.innerHTML = `<span class="diff-pill ${isWinning ? 'winning' : 'losing'}">${isWinning ? '+' : '-'}${absDiff}</span>`;
+  }
+
+  [me, opp].forEach(p => {
+    if (prevScores[p.id] !== undefined && prevScores[p.id] !== (p.totalScore || 0)) {
+      const el = document.getElementById(`score-${p.id}`);
+      if (el) { el.classList.remove('score-changed'); void el.offsetWidth; el.classList.add('score-changed'); }
+    }
+  });
+
+  const av = ['avatar-1','avatar-2','avatar-3','avatar-4','avatar-5'];
+  const c = document.getElementById('matchupRosters');
+  c.innerHTML = [me, opp].map((p, idx) => {
+    const isMe = p.id === mySessionId;
+    return `
+      <div class="roster-section">
+        <div class="roster-section-header">
+          <div class="roster-section-left">
+            <div class="roster-section-avatar ${av[idx]}">${p.name.charAt(0).toUpperCase()}</div>
+            <div class="roster-section-name">${p.name}${isMe ? '<span class="you-tag">(you)</span>' : ''}</div>
+          </div>
+          <div class="roster-section-total">${p.totalScore || 0}</div>
+        </div>
+        ${renderRosterCards(p.roster || [], p.id)}
+      </div>`;
+  }).join('');
+}
+
+function renderRankList(players, state) {
+  const c = document.getElementById('rankListView');
+  const sorted = [...players].sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+  const av = ['avatar-1','avatar-2','avatar-3','avatar-4','avatar-5'];
+
+  c.innerHTML = sorted.map((p, i) => {
+    const rbClass = i === 0 ? 'rb1' : i === 1 ? 'rb2' : i === 2 ? 'rb3' : 'rb4';
+    const isMe = p.id === mySessionId;
+    return `
+      <div class="rank-list-entry ${i === 0 ? 'rank-1-entry' : ''}" onclick="toggleRankExpand('rank-exp-${i}')">
+        <div class="rank-badge ${rbClass}">${i + 1}</div>
+        <div class="rank-info">
+          <div class="rank-pname">${p.name}${isMe ? ' (you)' : ''}</div>
+          <div class="rank-pmeta">${(p.roster || []).length} players</div>
+        </div>
+        <div class="rank-pts">${p.totalScore || 0}</div>
+      </div>
+      <div id="rank-exp-${i}" style="display:none;margin-bottom:10px;">
+        ${renderRosterCards(p.roster || [], p.id)}
+      </div>`;
+  }).join('');
+}
+
+function toggleRankExpand(id) {
+  const el = document.getElementById(id);
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function renderRosterCards(roster, ownerId) {
+  return roster.map((pick, idx) => {
+    const cardId = `rpc-${ownerId}-${idx}`;
+    const statPreview = getStatPreview(pick);
+    const gameStatus = pick.gameStatus || '';
+    const gameClass = gameStatus.includes('LIVE') || gameStatus.includes('In Progress') || gameStatus.includes('Q') || gameStatus.includes('Half')
+      ? 'game-live' : gameStatus.includes('Final') || gameStatus.includes('OFF')
+      ? 'game-final' : 'game-upcoming';
+
+    return `
+      <div class="roster-player-card">
+        <div class="rpc-main" onclick="togglePlayerDetail('${cardId}')">
+          <div class="rpc-league-accent ${pick.league}"></div>
+          ${pick.headshot
+            ? `<img class="rpc-photo" src="${pick.headshot}" onerror="this.outerHTML='<div class=\\'rpc-photo-placeholder\\'>${pick.position}</div>'">`
+            : `<div class="rpc-photo-placeholder">${pick.position}</div>`
+          }
+          <div class="rpc-info">
+            <div class="rpc-name">${pick.name}</div>
+            <div class="rpc-team">${pick.team} · ${pick.position}</div>
+            ${gameStatus ? `<div class="rpc-game-status ${gameClass}">${gameStatus}</div>` : ''}
+          </div>
+          <div class="rpc-score-col">
+            <div class="rpc-fantasy">${pick.fantasyScore || 0}</div>
+            <div class="rpc-stat-preview">${statPreview}</div>
+          </div>
+          <div class="rpc-chevron" id="chev-${cardId}">▼</div>
+        </div>
+        <div class="rpc-details" id="${cardId}">
+          ${renderStatGrid(pick)}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function togglePlayerDetail(id) {
+  const el = document.getElementById(id);
+  const chev = document.getElementById('chev-' + id);
+  el.classList.toggle('visible');
+  chev?.classList.toggle('open');
+}
+
+function getStatPreview(pick) {
+  const s = pick.stats || {};
+  if (pick.league === 'nba') return `${s.points||0}p/${s.rebounds||0}r/${s.assists||0}a`;
+  if (pick.league === 'nhl') {
+    if (pick.isGoalie) return `${s.saves||0}sv`;
+    return `${s.goals||0}g/${s.assists||0}a`;
+  }
+  return '';
+}
+
+function renderStatGrid(pick) {
+  const s = pick.stats || {};
+  let cells = '';
+  let bonuses = [];
+
+  if (pick.league === 'nba') {
+    const stats = [
+      { label: 'PTS', val: s.points||0, mult: 1 },
+      { label: 'REB', val: s.rebounds||0, mult: 1.5 },
+      { label: 'AST', val: s.assists||0, mult: 2 },
+      { label: 'STL', val: s.steals||0, mult: 3 },
+      { label: 'BLK', val: s.blocks||0, mult: 3 },
+    ];
+    cells = stats.map(st => {
+      const pts = (st.val * st.mult);
+      return `<div class="stat-cell">
+        <div class="stat-val ${pts > 0 ? 'has-points' : ''}">${st.val}</div>
+        <div class="stat-label">${st.label}</div>
+        ${pts > 0 ? `<div class="stat-pts">+${pts % 1 === 0 ? pts : pts.toFixed(1)}</div>` : ''}
+      </div>`;
+    }).join('');
+
+    const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
+    if (cats.length >= 3) bonuses.push('Triple-Double +10');
+    else if (cats.length >= 2) bonuses.push('Double-Double +5');
+  }
+
+  if (pick.league === 'nhl') {
+    if (pick.isGoalie) {
+      const stats = [
+        { label: 'SAVES', val: s.saves||0, mult: 0.5 },
+        { label: 'GA', val: s.goalsAgainst||0, mult: 0 },
+      ];
+      cells = stats.map(st => {
+        const pts = st.val * st.mult;
+        return `<div class="stat-cell">
+          <div class="stat-val ${pts > 0 ? 'has-points' : ''}">${st.val}</div>
+          <div class="stat-label">${st.label}</div>
+          ${pts > 0 ? `<div class="stat-pts">+${pts % 1 === 0 ? pts : pts.toFixed(1)}</div>` : ''}
+        </div>`;
+      }).join('');
+      if ((s.goalsAgainst||0) === 0 && (s.saves||0) > 0) bonuses.push('Shutout +5');
+    } else {
+      const stats = [
+        { label: 'G', val: s.goals||0, mult: 5 },
+        { label: 'A', val: s.assists||0, mult: 3 },
+        { label: 'SOG', val: s.shotsOnGoal||0, mult: 1 },
+        { label: 'BLK', val: s.blockedShots||0, mult: 2 },
+      ];
+      cells = stats.map(st => {
+        const pts = st.val * st.mult;
+        return `<div class="stat-cell">
+          <div class="stat-val ${pts > 0 ? 'has-points' : ''}">${st.val}</div>
+          <div class="stat-label">${st.label}</div>
+          ${pts > 0 ? `<div class="stat-pts">+${pts}</div>` : ''}
+        </div>`;
+      }).join('');
+      if ((s.goals||0) >= 3) bonuses.push('Hat Trick +3');
+    }
+  }
+
+  let bonusHtml = '';
+  if (bonuses.length) {
+    bonusHtml = `<div class="bonus-row">${bonuses.map(b => `<div class="bonus-chip">🌟 ${b}</div>`).join('')}</div>`;
+  }
+
+  return `<div class="stat-grid">${cells}</div>${bonusHtml}`;
+}

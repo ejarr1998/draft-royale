@@ -1,3 +1,9 @@
+-e 
+
+/* ============================================
+   MULTI-GAME LOBBY SYSTEM STYLES ADDED
+   ============================================ */
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
@@ -1402,3 +1408,287 @@ button, .player-card, .roster-player-card, .rpc-main, .rank-list-entry { touch-a
   .stat-grid { grid-template-columns: repeat(3, 1fr); }
   .modal-avg-grid { grid-template-columns: repeat(3, 1fr); }
 }
+/* ============================================
+   MULTI-GAME LOBBY SYSTEM
+   ============================================ */
+
+/* Active Games Lobby Banner (Multiple Games) */
+.active-games-lobby {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, rgba(255, 87, 34, 0.08) 0%, rgba(0, 180, 216, 0.08) 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 20px;
+}
+
+.active-games-lobby:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(255, 87, 34, 0.15);
+}
+
+.agl-pip {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 2s infinite;
+  flex-shrink: 0;
+}
+
+.agl-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.agl-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.agl-sub {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.agl-btn {
+  padding: 8px 16px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.agl-btn:hover {
+  background: var(--accent-hover);
+  transform: scale(1.05);
+}
+
+/* Games Lobby Modal */
+.games-lobby-modal {
+  background: var(--card);
+  border-radius: 16px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.glm-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.glm-header h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.glm-close-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 1.25rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.glm-close-btn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.glm-body {
+  padding: 16px 24px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Game Lobby Card */
+.game-lobby-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.game-lobby-card:hover {
+  transform: translateX(4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.game-lobby-card.live {
+  border-left: 3px solid var(--red);
+  background: linear-gradient(90deg, rgba(255, 61, 90, 0.05) 0%, var(--bg) 100%);
+}
+
+.game-lobby-card.drafting {
+  border-left: 3px solid var(--accent);
+  background: linear-gradient(90deg, rgba(255, 87, 34, 0.05) 0%, var(--bg) 100%);
+}
+
+.game-lobby-card.waiting {
+  border-left: 3px solid var(--blue);
+  background: linear-gradient(90deg, rgba(0, 180, 216, 0.05) 0%, var(--bg) 100%);
+}
+
+.game-lobby-card.finished {
+  border-left: 3px solid var(--green);
+  opacity: 0.7;
+}
+
+.glc-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.glc-emoji {
+  font-size: 1.5rem;
+}
+
+.glc-phase {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.glc-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.glc-room {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.glc-player {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.glc-join-btn {
+  padding: 8px 16px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.glc-join-btn:hover {
+  background: var(--accent-hover);
+  transform: scale(1.05);
+}
+
+.glc-leave-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 61, 90, 0.1);
+  color: var(--red);
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.glc-leave-btn:hover {
+  background: rgba(255, 61, 90, 0.2);
+  transform: scale(1.1);
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+  .games-lobby-modal {
+    width: 95%;
+    max-height: 90vh;
+  }
+  
+  .glm-header {
+    padding: 16px;
+  }
+  
+  .glm-header h2 {
+    font-size: 1.1rem;
+  }
+  
+  .glm-body {
+    padding: 12px 16px 16px;
+  }
+  
+  .game-lobby-card {
+    gap: 12px;
+    padding: 12px;
+  }
+  
+  .glc-emoji {
+    font-size: 1.25rem;
+  }
+  
+  .glc-phase {
+    font-size: 0.65rem;
+  }
+  
+  .glc-join-btn {
+    padding: 6px 12px;
+    font-size: 0.7rem;
+  }
+  
+  .glc-leave-btn {
+    width: 28px;
+    height: 28px;
+    font-size: 0.9rem;
+  }
+}
+
+/* ============================================
+   MULTI-GAME LOBBY SYSTEM
+   Added for supporting multiple simultaneous games
+   ============================================ */

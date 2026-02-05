@@ -12,7 +12,7 @@
 
     <!-- HOME -->
     <div class="screen active" id="homeScreen">
-      <div id="activeGameBanner" style="display:none;"></div>
+      <div id="activeGameBanner" class="active-game-banner-hidden"></div>
       <div class="hero">
         <div class="hero-badge">Season Live</div>
         <h1>DRAFT <span class="accent">ROYALE</span></h1>
@@ -23,13 +23,12 @@
       <div class="home-card">
         <div class="home-card-title">Get in the Game</div>
         <input class="input" id="playerName" placeholder="Enter your name" maxlength="20" autocomplete="off">
-        <div style="height: 12px;"></div>
+        <div class="spacer-sm"></div>
         <button class="btn btn-hero" onclick="createLobby()">CREATE GAME</button>
         <div class="or-divider">or join a room</div>
-        <input class="input" id="joinCode" placeholder="Room code" maxlength="6"
-               style="text-transform:uppercase;font-family:'JetBrains Mono',monospace;letter-spacing:8px;text-align:center;margin-bottom:10px;font-size:1.2rem;">
+        <input class="input join-code-input" id="joinCode" placeholder="Room code" maxlength="6">
         <button class="btn btn-glass" onclick="joinLobby()">Join Game</button>
-        <div style="height: 10px;"></div>
+        <div class="spacer-10"></div>
         <button class="btn btn-glass" onclick="findPublicGame()">🔍 Find Public Game</button>
       </div>
 
@@ -37,7 +36,7 @@
         <div class="section-label">📅 Game Slate</div>
         <div class="date-picker-row" id="datePickerRow"></div>
         <div class="games-scroll" id="todaysGames">
-          <div style="color:var(--text-dim);font-size:0.85rem;padding:10px;">Loading games...</div>
+          <div class="games-loading-msg">Loading games...</div>
         </div>
       </div>
 
@@ -86,7 +85,7 @@
         <div class="section-label">👥 Players</div>
         <div id="playerSlots"></div>
       </div>
-      <div class="lobby-controls" id="hostControls" style="display:none;">
+      <div class="lobby-controls host-controls-hidden" id="hostControls">
 
         <div class="settings-section-title">Draft Settings</div>
 
@@ -159,17 +158,17 @@
         </div>
 
         <div class="settings-summary" id="settingsSummary"></div>
-        <div style="height:8px;"></div>
+        <div class="spacer-xs"></div>
         <button class="btn btn-hero" onclick="startDraft()">⚔️ START DRAFT</button>
       </div>
-      <div id="waitingMsg" style="display:none;">
-        <div style="text-align:center;color:var(--text-dim);margin-top:28px;font-weight:500;margin-bottom:12px;">
+      <div id="waitingMsg" class="waiting-msg-hidden">
+        <div class="waiting-msg-text">
           Waiting for host to start...
         </div>
         <div class="settings-summary" id="guestSettingsSummary"></div>
       </div>
-      <div style="height:16px;"></div>
-      <button class="btn btn-glass" onclick="leaveLobby()" style="width:100%;color:var(--text-dim);font-size:0.85rem;">Leave Lobby</button>
+      <div class="spacer-md"></div>
+      <button class="btn btn-glass leave-lobby-btn" onclick="leaveLobby()">Leave Lobby</button>
     </div>
 
     <!-- DRAFT -->
@@ -273,10 +272,18 @@
       <!-- 3+ players ranked list -->
       <div id="rankListView" style="display:none;"></div>
 
-      <div style="height:12px;"></div>
-      <button class="btn btn-glass" onclick="goHome()" style="width:100%;">← Back to Home</button>
-      <div style="height:8px;"></div>
-      <button class="btn btn-glass" onclick="leaveGame()" style="width:100%;color:var(--red);border-color:rgba(255,61,90,0.2);font-size:0.85rem;">Leave Game Permanently</button>
+      <div class="live-spacer"></div>
+      <button class="btn btn-glass back-home-btn" onclick="goHome()">← Back to Home</button>
+      <div class="spacer-xs"></div>
+      <button class="btn btn-glass leave-game-btn" onclick="leaveGame()">Leave Game Permanently</button>
+    </div>
+
+    <div class="draft-loading-overlay" id="draftLoadingOverlay">
+      <div class="draft-loading-card">
+        <div class="draft-loading-spinner"></div>
+        <div class="draft-loading-title">Preparing Draft</div>
+        <div class="draft-loading-msg" id="draftLoadingMsg">Fetching games & players...</div>
+      </div>
     </div>
 
     <div class="toast" id="toast"></div>

@@ -262,7 +262,8 @@ function getDateOptions() {
   for (let i = 0; i < 4; i++) {
     const d = new Date();
     d.setDate(d.getDate() + i);
-    const iso = d.toISOString().split('T')[0];
+    // Use local date components to avoid UTC timezone shift
+    const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     let label;
     if (i === 0) label = 'Today';
     else if (i === 1) label = 'Tomorrow';

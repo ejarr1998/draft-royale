@@ -481,39 +481,93 @@ async function fetchNBAGameLog(athleteId) {
     const data = await res.json();
     
     const games = [];
-    const events = data.events || {};
-    const categories = data.categories || [];
     
-    // Find the stats category
+    // The ESPN gamelog API can have different structures depending on season.
+    // Structure 1: data.events = { eventId: { gameDate, opponent, ... } },
+    //              data.categories = [ { type/name, labels, events: [{ eventId, stats }] } ]
+    // Structure 2: data.seasonTypes = [ { categories: [ { events, labels } ] } ]
+    // We need to handle both.
+    
+    let events = data.events || {};
     let labels = [];
     let statsByEvent = {};
+    
+    // Try top-level categories first
+    const categories = data.categories || [];
     for (const cat of categories) {
-      if (cat.type === 'event' || cat.name === 'event') {
+      if (cat.events && cat.labels) {
         labels = cat.labels || [];
         for (const evt of cat.events || []) {
-          statsByEvent[evt.eventId] = evt.stats || [];
+          const eid = evt.eventId || evt.id;
+          if (eid) statsByEvent[eid] = evt.stats || [];
         }
       }
     }
     
-    // Get last 3 events
-    const eventIds = Object.keys(events).slice(-5);
-    const last3 = eventIds.slice(-3).reverse();
+    // If no stats found, try seasonTypes structure
+    if (Object.keys(statsByEvent).length === 0 && data.seasonTypes) {
+      for (const season of data.seasonTypes) {
+        const cats = season.categories || [];
+        for (const cat of cats) {
+          if (cat.events && cat.labels) {
+            labels = cat.labels || [];
+            for (const evt of cat.events || []) {
+              const eid = evt.eventId || evt.id;
+              if (eid) statsByEvent[eid] = evt.stats || [];
+            }
+            // Also collect events metadata from this season
+            if (season.events) {
+              for (const [eid, evtData] of Object.entries(season.events)) {
+                if (!events[eid]) events[eid] = evtData;
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // If still no events metadata, build from available data
+    if (Object.keys(events).length === 0 && data.seasonTypes) {
+      for (const season of data.seasonTypes) {
+        if (season.events) {
+          for (const [eid, evtData] of Object.entries(season.events)) {
+            events[eid] = evtData;
+          }
+        }
+      }
+    }
+    
+    // Get last 3 events that have stats
+    const eventIds = Object.keys(statsByEvent);
+    // Also include event IDs from events object if not already present
+    for (const eid of Object.keys(events)) {
+      if (!eventIds.includes(eid)) eventIds.push(eid);
+    }
+    
+    // Sort by event IDs or date, take last 3 with stats
+    const eventsWithStats = eventIds.filter(eid => statsByEvent[eid] && statsByEvent[eid].length > 0);
+    const last3 = eventsWithStats.slice(-3).reverse();
+    
+    const ptsIdx = labels.indexOf('PTS');
+    const rebIdx = labels.indexOf('REB');
+    const astIdx = labels.indexOf('AST');
+    const stlIdx = labels.indexOf('STL');
+    const blkIdx = labels.indexOf('BLK');
+    const minIdx = labels.indexOf('MIN');
     
     for (const evtId of last3) {
-      const evt = events[evtId];
+      const evt = events[evtId] || {};
       const stats = statsByEvent[evtId] || [];
       
-      const ptsIdx = labels.indexOf('PTS');
-      const rebIdx = labels.indexOf('REB');
-      const astIdx = labels.indexOf('AST');
-      const stlIdx = labels.indexOf('STL');
-      const blkIdx = labels.indexOf('BLK');
-      const minIdx = labels.indexOf('MIN');
+      let oppStr = '?';
+      if (evt.opponent) {
+        const prefix = evt.atVs || evt.homeAway === 'away' ? '@' : 'vs';
+        oppStr = `${prefix} ${evt.opponent.abbreviation || evt.opponent.displayName || '?'}`;
+      }
       
       games.push({
-        date: evt?.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
-        opponent: evt?.opponent?.abbreviation || evt?.atVs + ' ' + (evt?.opponent?.abbreviation || '?'),
+        date: evt.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
+        opponent: oppStr,
         stats: {
           points: parseInt(stats[ptsIdx]) || 0,
           rebounds: parseInt(stats[rebIdx]) || 0,
@@ -523,6 +577,34 @@ async function fetchNBAGameLog(athleteId) {
           minutes: stats[minIdx] || '0'
         }
       });
+    }
+    
+    // Fallback: if gamelog endpoint returned nothing useful, try the athlete's recent splits
+    if (games.length === 0) {
+      try {
+        const fallbackRes = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/athletes/${athleteId}/eventlog`);
+        const fallbackData = await fallbackRes.json();
+        
+        const recentEvents = (fallbackData.events || []).slice(-3).reverse();
+        for (const evt of recentEvents) {
+          if (evt.stats) {
+            games.push({
+              date: evt.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
+              opponent: evt.opponent?.abbreviation || '?',
+              stats: {
+                points: parseInt(evt.stats.points) || 0,
+                rebounds: parseInt(evt.stats.rebounds) || 0,
+                assists: parseInt(evt.stats.assists) || 0,
+                steals: parseInt(evt.stats.steals) || 0,
+                blocks: parseInt(evt.stats.blocks) || 0,
+                minutes: evt.stats.minutes || '0'
+              }
+            });
+          }
+        }
+      } catch (fallbackErr) {
+        // silently fail
+      }
     }
     
     return games;
@@ -985,12 +1067,14 @@ io.on('connection', (socket) => {
         currentPick: lobby.currentPick,
         currentDrafter: lobby.draftOrder[lobby.currentPick],
         timePerPick: timeRemaining,
-        games: (lobby.games || []).map(g => ({
-          gameId: g.gameId, league: g.league,
-          homeTeam: g.homeTeam, awayTeam: g.awayTeam,
-          homeName: g.homeName, awayName: g.awayName,
-          startTime: g.startTime, state: g.state, status: g.status
-        }))
+        games: (lobby.games || [])
+          .filter(g => (lobby.settings.leagues || 'both') === 'both' || g.league === lobby.settings.leagues)
+          .map(g => ({
+            gameId: g.gameId, league: g.league,
+            homeTeam: g.homeTeam, awayTeam: g.awayTeam,
+            homeName: g.homeName, awayName: g.awayName,
+            startTime: g.startTime, state: g.state, status: g.status
+          }))
       });
     } else {
       socket.emit('rejoinState', {
@@ -1105,12 +1189,14 @@ io.on('connection', (socket) => {
       currentPick: 0,
       currentDrafter: lobby.draftOrder[0],
       timePerPick: timePerPick,
-      games: lobby.games.map(g => ({
-        gameId: g.gameId, league: g.league,
-        homeTeam: g.homeTeam, awayTeam: g.awayTeam,
-        homeName: g.homeName, awayName: g.awayName,
-        startTime: g.startTime, state: g.state, status: g.status
-      }))
+      games: lobby.games
+        .filter(g => leagues === 'both' || g.league === leagues)
+        .map(g => ({
+          gameId: g.gameId, league: g.league,
+          homeTeam: g.homeTeam, awayTeam: g.awayTeam,
+          homeName: g.homeName, awayName: g.awayName,
+          startTime: g.startTime, state: g.state, status: g.status
+        }))
     });
     
     // Start draft timer

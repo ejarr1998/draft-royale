@@ -1,9 +1,9 @@
 const express = require('express');
 const http = require('http');
-const fs = require('fs');
-const path = require('path');
 const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
@@ -11,6 +11,75 @@ const io = new Server(server);
 
 app.use(express.json());
 app.use(express.static('public'));
+
+// ============================================
+// CACHE SETUP - Persistent file-based caching
+// ============================================
+const CACHE_DIR = process.env.CACHE_DIR || path.join(__dirname, '..', '.cache');
+
+// Ensure cache directory exists
+if (!fs.existsSync(CACHE_DIR)) {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+  console.log(`Cache directory created at: ${CACHE_DIR}`);
+}
+
+// File-based cache functions
+function getCacheFile(key) {
+  const safeKey = key.replace(/[^a-zA-Z0-9-_]/g, '_');
+  return path.join(CACHE_DIR, `${safeKey}.json`);
+}
+
+function getFileCache(key, ttlMs = 10 * 60 * 1000) {
+  try {
+    const cacheFile = getCacheFile(key);
+    if (!fs.existsSync(cacheFile)) return null;
+    
+    const data = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    if (Date.now() - data.timestamp > ttlMs) {
+      fs.unlinkSync(cacheFile); // cleanup stale cache
+      return null;
+    }
+    return data.value;
+  } catch (e) {
+    return null;
+  }
+}
+
+function setFileCache(key, value) {
+  try {
+    const cacheFile = getCacheFile(key);
+    const data = { value, timestamp: Date.now() };
+    fs.writeFileSync(cacheFile, JSON.stringify(data), 'utf8');
+  } catch (e) {
+    console.error('Cache write error:', e.message);
+  }
+}
+
+// Cleanup old cache files on startup (older than 1 hour)
+function cleanupOldCache() {
+  try {
+    const files = fs.readdirSync(CACHE_DIR);
+    const hourAgo = Date.now() - (60 * 60 * 1000);
+    
+    let cleaned = 0;
+    for (const file of files) {
+      if (file.endsWith('.json')) {
+        const filePath = path.join(CACHE_DIR, file);
+        const stats = fs.statSync(filePath);
+        if (stats.mtime.getTime() < hourAgo) {
+          fs.unlinkSync(filePath);
+          cleaned++;
+        }
+      }
+    }
+    if (cleaned > 0) console.log(`Cleaned up ${cleaned} old cache files`);
+  } catch (e) {
+    console.error('Cache cleanup error:', e.message);
+  }
+}
+
+// Run cleanup on startup
+cleanupOldCache();
 
 // ============================================
 // CONFIGURATION
@@ -40,214 +109,6 @@ const SCORING = {
     hatTrick: 3
   }
 };
-
-// ============================================
-// GLOBAL CACHES  (disk-backed for restart survival)
-// ============================================
-//
-// Strategy: the slow-to-build caches (player season stats, rosters) are
-// written to a JSON file every few minutes and reloaded on startup.
-// Fast-changing caches (boxscores, schedules) are NOT persisted — they'd
-// be stale after a restart anyway.
-//
-// On Railway, the filesystem survives process restarts within the same
-// deployment.  For persistence across *deploys*, mount a Railway Volume
-// at the CACHE_DIR path.
-
-const CACHE_DIR = process.env.CACHE_DIR || path.join(__dirname, '..', '.cache');
-const CACHE_FILE = path.join(CACHE_DIR, 'player-cache.json');
-const CACHE_PERSIST_INTERVAL = 3 * 60 * 1000; // write to disk every 3 min
-const CACHE_PERSIST_VERSION = 2; // bump if cache schema changes
-
-// --- Persistent caches (survive restart) ---
-// NHL player stats cache — avoids re-fetching landing pages during enrichment
-const nhlPlayerStatsCache = new Map();
-const NHL_STATS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours — season avgs barely change intraday
-
-// NBA player stats cache
-const nbaPlayerStatsCache = new Map();
-const NBA_STATS_CACHE_TTL = 4 * 60 * 60 * 1000;
-
-// NHL roster cache — team rosters don't change during a session
-const nhlRosterCache = new Map();
-const NHL_ROSTER_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
-
-// NBA roster cache
-const nbaRosterCache = new Map();
-const NBA_ROSTER_CACHE_TTL = 6 * 60 * 60 * 1000;
-
-// Game log cache — avoids redundant API calls when opening the same player modal
-const gameLogCache = new Map();
-const GAMELOG_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
-
-// --- Ephemeral caches (NOT persisted — too short-lived) ---
-// Schedule cache — avoids re-fetching the same day's schedule
-const scheduleCache = new Map();
-const SCHEDULE_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
-
-// Live boxscore cache — avoids hammering APIs during score updates
-const boxscoreCache = new Map();
-const BOXSCORE_CACHE_TTL = 25 * 1000; // 25 seconds
-
-// Registry of which caches to persist (name -> { cache, ttl })
-const PERSISTENT_CACHES = {
-  nhlPlayerStats:  { cache: nhlPlayerStatsCache, ttl: NHL_STATS_CACHE_TTL },
-  nbaPlayerStats:  { cache: nbaPlayerStatsCache, ttl: NBA_STATS_CACHE_TTL },
-  nhlRoster:       { cache: nhlRosterCache,      ttl: NHL_ROSTER_CACHE_TTL },
-  nbaRoster:       { cache: nbaRosterCache,      ttl: NBA_ROSTER_CACHE_TTL },
-  gameLog:         { cache: gameLogCache,         ttl: GAMELOG_CACHE_TTL },
-};
-
-// ============================================
-// CACHE HELPERS
-// ============================================
-function getCached(cache, key, ttl) {
-  const entry = cache.get(key);
-  if (entry && Date.now() - entry.timestamp < ttl) return entry.data;
-  cache.delete(key);
-  return null;
-}
-
-function setCache(cache, key, data, maxSize = 1000) {
-  cache.set(key, { data, timestamp: Date.now() });
-  if (cache.size > maxSize) {
-    const oldest = cache.keys().next().value;
-    cache.delete(oldest);
-  }
-}
-
-// ============================================
-// DISK PERSISTENCE
-// ============================================
-function saveCacheToDisk() {
-  try {
-    if (!fs.existsSync(CACHE_DIR)) {
-      fs.mkdirSync(CACHE_DIR, { recursive: true });
-    }
-
-    const payload = { version: CACHE_PERSIST_VERSION, savedAt: Date.now(), caches: {} };
-
-    for (const [name, { cache, ttl }] of Object.entries(PERSISTENT_CACHES)) {
-      const entries = [];
-      const now = Date.now();
-      for (const [key, entry] of cache) {
-        // Only persist entries that haven't expired yet
-        if (now - entry.timestamp < ttl) {
-          entries.push([key, entry]);
-        }
-      }
-      payload.caches[name] = entries;
-    }
-
-    // Atomic write: write to temp file then rename
-    const tmpFile = CACHE_FILE + '.tmp';
-    fs.writeFileSync(tmpFile, JSON.stringify(payload));
-    fs.renameSync(tmpFile, CACHE_FILE);
-
-    const totalEntries = Object.values(payload.caches).reduce((s, c) => s + c.length, 0);
-    const sizeKB = Math.round(fs.statSync(CACHE_FILE).size / 1024);
-    console.log(`Cache persisted: ${totalEntries} entries, ${sizeKB}KB`);
-  } catch (err) {
-    console.error('Failed to persist cache:', err.message);
-  }
-}
-
-function loadCacheFromDisk() {
-  try {
-    if (!fs.existsSync(CACHE_FILE)) {
-      console.log('No cache file found — starting fresh');
-      return;
-    }
-
-    const raw = fs.readFileSync(CACHE_FILE, 'utf8');
-    const payload = JSON.parse(raw);
-
-    // Version check — discard incompatible caches
-    if (payload.version !== CACHE_PERSIST_VERSION) {
-      console.log(`Cache file version ${payload.version} doesn't match ${CACHE_PERSIST_VERSION} — discarding`);
-      fs.unlinkSync(CACHE_FILE);
-      return;
-    }
-
-    const now = Date.now();
-    let loaded = 0, expired = 0;
-
-    for (const [name, { cache, ttl }] of Object.entries(PERSISTENT_CACHES)) {
-      const entries = payload.caches?.[name];
-      if (!entries || !Array.isArray(entries)) continue;
-
-      for (const [key, entry] of entries) {
-        // Recheck TTL on load (time may have passed since save)
-        if (entry && entry.timestamp && (now - entry.timestamp < ttl)) {
-          cache.set(key, entry);
-          loaded++;
-        } else {
-          expired++;
-        }
-      }
-    }
-
-    const age = Math.round((now - payload.savedAt) / 1000);
-    console.log(`Cache restored: ${loaded} entries loaded, ${expired} expired (saved ${age}s ago)`);
-  } catch (err) {
-    console.error('Failed to load cache from disk:', err.message);
-    // Corrupt file — remove it so we don't fail every restart
-    try { fs.unlinkSync(CACHE_FILE); } catch {}
-  }
-}
-
-// Persist on clean shutdown
-function setupGracefulShutdown() {
-  const shutdown = (signal) => {
-    console.log(`\n${signal} received — saving cache before exit...`);
-    saveCacheToDisk();
-    process.exit(0);
-  };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-}
-
-// Load cache immediately on module load
-loadCacheFromDisk();
-setupGracefulShutdown();
-
-// Periodic save (in case of hard crash / kill -9)
-setInterval(saveCacheToDisk, CACHE_PERSIST_INTERVAL);
-
-// Rate-limited fetch helper with retries
-async function fetchWithRetry(url, { maxRetries = 2, baseDelay = 800, label = '' } = {}) {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const res = await fetch(url);
-      if (res.status === 429) {
-        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 200;
-        if (attempt < maxRetries) {
-          console.log(`Rate limited${label ? ` (${label})` : ''}, retry in ${Math.round(delay)}ms (attempt ${attempt + 1}/${maxRetries})`);
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        }
-        console.warn(`Rate limited${label ? ` (${label})` : ''}, exhausted retries`);
-        return null;
-      }
-      if (!res.ok) {
-        if (attempt < maxRetries) {
-          await new Promise(r => setTimeout(r, baseDelay));
-          continue;
-        }
-        return null;
-      }
-      return await res.json();
-    } catch (e) {
-      if (attempt < maxRetries) {
-        await new Promise(r => setTimeout(r, baseDelay));
-        continue;
-      }
-      console.error(`Fetch failed${label ? ` (${label})` : ''}: ${e.message}`);
-      return null;
-    }
-  }
-  return null;
-}
 
 // ============================================
 // STATE
@@ -307,10 +168,12 @@ function generateDraftOrder(players, rosterSize, draftType = 'snake') {
   
   for (let round = 0; round < rosterSize; round++) {
     if (draftType === 'snake' && round % 2 === 1) {
+      // Reverse for odd rounds in snake draft
       for (let i = numPlayers - 1; i >= 0; i--) {
         order.push(players[i].id);
       }
     } else {
+      // Forward (always for linear, even rounds for snake)
       for (let i = 0; i < numPlayers; i++) {
         order.push(players[i].id);
       }
@@ -324,26 +187,21 @@ function generateDraftOrder(players, rosterSize, draftType = 'snake') {
 // SPORTS API - FETCH TODAY'S GAMES & PLAYERS
 // ============================================
 async function fetchNBAGames(targetDate) {
-  const cacheKey = `nba-${targetDate || 'today'}`;
-  const cached = getCached(scheduleCache, cacheKey, SCHEDULE_CACHE_TTL);
-  if (cached) return cached;
-
   try {
     let dateStr;
     if (targetDate) {
+      // Parse ISO date string directly to avoid timezone shift
+      // "2026-02-05" -> "20260205"
       const parts = targetDate.split('-');
       dateStr = parts.join('');
     } else {
       const d = new Date();
       dateStr = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
     }
-    const data = await fetchWithRetry(
-      `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${dateStr}`,
-      { label: 'NBA schedule' }
-    );
-    if (!data) return [];
+    const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${dateStr}`);
+    const data = await response.json();
     
-    const games = (data.events || []).map(event => {
+    return (data.events || []).map(event => {
       const home = event.competitions[0].competitors.find(c => c.homeAway === 'home');
       const away = event.competitions[0].competitors.find(c => c.homeAway === 'away');
       return {
@@ -360,9 +218,6 @@ async function fetchNBAGames(targetDate) {
         status: event.status?.type?.shortDetail
       };
     });
-
-    setCache(scheduleCache, cacheKey, games, 50);
-    return games;
   } catch (err) {
     console.error('Error fetching NBA games:', err);
     return [];
@@ -370,23 +225,22 @@ async function fetchNBAGames(targetDate) {
 }
 
 async function fetchNHLGames(targetDate) {
-  const cacheKey = `nhl-${targetDate || 'today'}`;
-  const cached = getCached(scheduleCache, cacheKey, SCHEDULE_CACHE_TTL);
-  if (cached) return cached;
-
   try {
     let dateStr;
     if (targetDate) {
+      // Use ISO date string directly to avoid timezone shift
+      // "2026-02-05" stays "2026-02-05"
       dateStr = targetDate;
     } else {
       const d = new Date();
       dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     }
-    const data = await fetchWithRetry(
-      `https://api-web.nhle.com/v1/schedule/${dateStr}`,
-      { label: 'NHL schedule' }
-    );
-    if (!data) return [];
+    const response = await fetch(`https://api-web.nhle.com/v1/schedule/${dateStr}`);
+    if (!response.ok) {
+      console.error(`NHL schedule API returned ${response.status} for ${dateStr}`);
+      return [];
+    }
+    const data = await response.json();
     
     const games = [];
     for (const day of data.gameWeek || []) {
@@ -406,8 +260,6 @@ async function fetchNHLGames(targetDate) {
         }
       }
     }
-
-    setCache(scheduleCache, cacheKey, games, 50);
     return games;
   } catch (err) {
     console.error('Error fetching NHL games:', err);
@@ -419,6 +271,7 @@ async function fetchNBAPlayersForGames(games) {
   const players = [];
   
   for (const game of games) {
+    // Build list of teams in this game
     const teams = [
       { id: game.homeTeamId, abbrev: game.homeTeam, name: game.homeName },
       { id: game.awayTeamId, abbrev: game.awayTeam, name: game.awayName }
@@ -426,84 +279,68 @@ async function fetchNBAPlayersForGames(games) {
     
     let gotPlayers = false;
     
+    // Primary approach: fetch team rosters via ESPN team roster endpoint
+    // This works reliably for pre-game, in-progress, and completed games
     for (const team of teams) {
       if (!team.id) continue;
-
-      // Check roster cache first
-      const rosterKey = `nba-${team.id}`;
-      const cachedRoster = getCached(nbaRosterCache, rosterKey, NBA_ROSTER_CACHE_TTL);
-      
-      let athletes;
-      if (cachedRoster) {
-        athletes = cachedRoster;
-      } else {
-        try {
-          const data = await fetchWithRetry(
-            `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${team.id}/roster`,
-            { label: `NBA roster ${team.abbrev}` }
-          );
-          athletes = data?.athletes || [];
-          if (athletes.length > 0) {
-            setCache(nbaRosterCache, rosterKey, athletes, 100);
+      try {
+        const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${team.id}/roster`);
+        const data = await response.json();
+        
+        for (const athlete of data.athletes || []) {
+          if (athlete.displayName) {
+            players.push({
+              id: `nba-${athlete.id}`,
+              athleteId: athlete.id,
+              name: athlete.displayName,
+              team: team.abbrev,
+              teamName: team.name,
+              league: 'nba',
+              position: athlete.position?.abbreviation || 'N/A',
+              gameId: game.gameId,
+              headshot: athlete.headshot?.href || null,
+              stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
+              fantasyScore: 0,
+              seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
+              projectedScore: 0
+            });
+            gotPlayers = true;
           }
-        } catch (teamErr) {
-          console.error(`Error fetching NBA roster for team ${team.abbrev} (${team.id}):`, teamErr.message);
-          athletes = [];
         }
-      }
-
-      for (const athlete of athletes) {
-        if (athlete.displayName) {
-          players.push({
-            id: `nba-${athlete.id}`,
-            athleteId: athlete.id,
-            name: athlete.displayName,
-            team: team.abbrev,
-            teamName: team.name,
-            league: 'nba',
-            position: athlete.position?.abbreviation || 'N/A',
-            gameId: game.gameId,
-            headshot: athlete.headshot?.href || null,
-            stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
-            fantasyScore: 0,
-            seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
-            projectedScore: 0
-          });
-          gotPlayers = true;
-        }
+      } catch (teamErr) {
+        console.error(`Error fetching NBA roster for team ${team.abbrev} (${team.id}):`, teamErr.message);
       }
     }
     
-    // Fallback: summary endpoint for in-progress/completed games
+    // Fallback: if team roster endpoint didn't work, try summary endpoint
+    // (works for in-progress/completed games that have rosters populated)
     if (!gotPlayers) {
       try {
-        const data = await fetchWithRetry(
-          `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${game.gameId}`,
-          { label: `NBA summary ${game.gameId}` }
-        );
-        if (data) {
-          for (const roster of data.rosters || []) {
-            const teamAbbrev = roster.team?.abbreviation;
-            const teamName = roster.team?.displayName;
-            for (const entry of roster.roster || []) {
-              const athlete = entry.athlete || entry;
-              if (athlete.displayName) {
-                players.push({
-                  id: `nba-${athlete.id}`,
-                  athleteId: athlete.id,
-                  name: athlete.displayName,
-                  team: teamAbbrev,
-                  teamName: teamName,
-                  league: 'nba',
-                  position: athlete.position?.abbreviation || 'N/A',
-                  gameId: game.gameId,
-                  headshot: athlete.headshot?.href || null,
-                  stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
-                  fantasyScore: 0,
-                  seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
-                  projectedScore: 0
-                });
-              }
+        const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${game.gameId}`);
+        const data = await response.json();
+        
+        for (const roster of data.rosters || []) {
+          const teamAbbrev = roster.team?.abbreviation;
+          const teamName = roster.team?.displayName;
+          
+          for (const entry of roster.roster || []) {
+            const athlete = entry.athlete || entry;
+            if (athlete.displayName) {
+              players.push({
+                id: `nba-${athlete.id}`,
+                athleteId: athlete.id,
+                name: athlete.displayName,
+                team: teamAbbrev,
+                teamName: teamName,
+                league: 'nba',
+                position: athlete.position?.abbreviation || 'N/A',
+                gameId: game.gameId,
+                headshot: athlete.headshot?.href || null,
+                stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
+                fantasyScore: 0,
+                seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
+                projectedScore: 0
+              });
             }
           }
         }
@@ -520,83 +357,77 @@ async function fetchNHLPlayersForGames(games) {
   const players = [];
   
   for (const game of games) {
-    const teams = [
-      { abbrev: game.homeTeam, name: game.homeName },
-      { abbrev: game.awayTeam, name: game.awayName }
-    ];
-    
-    for (const team of teams) {
-      // Check roster cache
-      const rosterKey = `nhl-${team.abbrev}`;
-      const cachedRoster = getCached(nhlRosterCache, rosterKey, NHL_ROSTER_CACHE_TTL);
-
-      let rosterData;
-      if (cachedRoster) {
-        rosterData = cachedRoster;
-      } else {
+    try {
+      // Use team roster endpoints instead of gamecenter (which doesn't have a roster path)
+      // Fetch rosters for both teams in the game
+      const teams = [
+        { abbrev: game.homeTeam, name: game.homeName },
+        { abbrev: game.awayTeam, name: game.awayName }
+      ];
+      
+      for (const team of teams) {
         try {
-          const data = await fetchWithRetry(
-            `https://api-web.nhle.com/v1/roster/${team.abbrev}/current`,
-            { label: `NHL roster ${team.abbrev}` }
-          );
-          if (data) {
-            rosterData = data;
-            setCache(nhlRosterCache, rosterKey, data, 100);
-          } else {
+          const response = await fetch(`https://api-web.nhle.com/v1/roster/${team.abbrev}/current`);
+          if (!response.ok) {
+            console.error(`NHL roster API returned ${response.status} for ${team.abbrev}`);
             continue;
+          }
+          const data = await response.json();
+          
+          for (const posGroup of ['forwards', 'defensemen', 'goalies']) {
+            for (const player of (data[posGroup] || [])) {
+              const position = posGroup === 'forwards' ? player.positionCode || 'F' :
+                              posGroup === 'defensemen' ? 'D' : 'G';
+              const isGoalie = posGroup === 'goalies';
+              
+              players.push({
+                id: `nhl-${player.id}`,
+                athleteId: player.id,
+                name: `${player.firstName?.default || ''} ${player.lastName?.default || ''}`.trim(),
+                team: team.abbrev,
+                teamName: team.name?.trim(),
+                league: 'nhl',
+                position: position,
+                gameId: game.gameId,
+                headshot: player.headshot || null,
+                stats: isGoalie ? 
+                  { saves: 0, goalsAgainst: 0 } :
+                  { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
+                fantasyScore: 0,
+                isGoalie: isGoalie,
+                seasonAvg: isGoalie ? { saves: 0, goalsAgainst: 0 } : { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
+                projectedScore: 0
+              });
+            }
           }
         } catch (teamErr) {
           console.error(`Error fetching roster for ${team.abbrev}:`, teamErr.message);
-          continue;
         }
       }
-
-      for (const posGroup of ['forwards', 'defensemen', 'goalies']) {
-        for (const player of (rosterData[posGroup] || [])) {
-          const position = posGroup === 'forwards' ? player.positionCode || 'F' :
-                          posGroup === 'defensemen' ? 'D' : 'G';
-          const isGoalie = posGroup === 'goalies';
-          
-          players.push({
-            id: `nhl-${player.id}`,
-            athleteId: player.id,
-            name: `${player.firstName?.default || ''} ${player.lastName?.default || ''}`.trim(),
-            team: team.abbrev,
-            teamName: team.name?.trim(),
-            league: 'nhl',
-            position: position,
-            gameId: game.gameId,
-            headshot: player.headshot || null,
-            stats: isGoalie ? 
-              { saves: 0, goalsAgainst: 0 } :
-              { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
-            fantasyScore: 0,
-            isGoalie: isGoalie,
-            seasonAvg: isGoalie ? { saves: 0, goalsAgainst: 0 } : { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
-            projectedScore: 0
-          });
-        }
-      }
+    } catch (err) {
+      console.error(`Error fetching NHL players for game ${game.gameId}:`, err);
     }
   }
   
   return players;
 }
 
-// Fetch season averages for NBA players in bulk (one call per athlete)
+// Fetch season averages for NBA players in bulk (one call per athlete) - WITH CACHING
 async function enrichNBAPlayerAverages(players) {
   const nbaPlayers = players.filter(p => p.league === 'nba');
   
-  const BATCH_SIZE = 8;
-  const BATCH_DELAY = 400;
+  // Process in true sequential batches
+  const BATCH_SIZE = 10;
+  const BATCH_DELAY = 300;
   
   for (let i = 0; i < nbaPlayers.length; i += BATCH_SIZE) {
     const batch = nbaPlayers.slice(i, i + BATCH_SIZE);
     
     await Promise.all(batch.map(async (player) => {
-      // Check cache first
-      const cacheKey = player.athleteId;
-      const cached = getCached(nbaPlayerStatsCache, cacheKey, NBA_STATS_CACHE_TTL);
+      const cacheKey = `nba_stats_${player.athleteId}`;
+      
+      // Check cache first (24 hour TTL for season stats)
+      const cached = getFileCache(cacheKey, 24 * 60 * 60 * 1000);
       if (cached) {
         player.seasonAvg = cached.seasonAvg;
         player.projectedScore = cached.projectedScore;
@@ -604,17 +435,19 @@ async function enrichNBAPlayerAverages(players) {
       }
 
       try {
-        const data = await fetchWithRetry(
-          `https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${player.athleteId}/stats`,
-          { label: `NBA stats ${player.name}`, maxRetries: 1 }
-        );
-        if (!data) return;
+        const res = await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${player.athleteId}/stats`);
+        const data = await res.json();
         
+        // ESPN v3 stats endpoint returns categories like:
+        // { name: "averages", labels: ["GP","GS","MIN",...,"REB","AST","BLK","STL",...,"PTS"],
+        //   statistics: [ { season: {year:2025}, stats: ["55","55","33.1",...] }, ... ] }
+        // We need the most recent season's stats from the "averages" category.
         const categories = data.categories || [];
         const avgCat = categories.find(c => c.name === 'averages' || c.displayName?.includes('Average'));
         
         if (avgCat && avgCat.labels && avgCat.statistics && avgCat.statistics.length > 0) {
           const labels = avgCat.labels;
+          // Get the most recent season (last entry in statistics array)
           const latestSeason = avgCat.statistics[avgCat.statistics.length - 1];
           const vals = latestSeason.stats || [];
           
@@ -628,7 +461,7 @@ async function enrichNBAPlayerAverages(players) {
           };
         }
         
-        // Fallback: perGame category
+        // Fallback: try the older perGame category format (in case ESPN changes format)
         if (player.seasonAvg.points === 0) {
           for (const cat of categories) {
             if (cat.type === 'perGame' || cat.name === 'perGame') {
@@ -647,7 +480,7 @@ async function enrichNBAPlayerAverages(players) {
           }
         }
         
-        // Fallback: splits
+        // Fallback: check splits
         if (player.seasonAvg.points === 0) {
           const splits = data.splits || {};
           const perGame = splits.categories?.find(c => c.name === 'general' || c.type === 'perGame');
@@ -663,234 +496,123 @@ async function enrichNBAPlayerAverages(players) {
           }
         }
         
-        // Calculate projection
+        // Recalculate projection
         const a = player.seasonAvg;
         player.projectedScore = Math.round(((a.points * SCORING.nba.points) + (a.rebounds * SCORING.nba.rebounds) +
           (a.assists * SCORING.nba.assists) + (a.steals * SCORING.nba.steals) + (a.blocks * SCORING.nba.blocks)) * 10) / 10;
 
         // Cache the result
-        setCache(nbaPlayerStatsCache, cacheKey, {
+        setFileCache(cacheKey, {
           seasonAvg: player.seasonAvg,
           projectedScore: player.projectedScore
-        }, 2000);
+        });
       } catch (e) {
         // Silently fail - player keeps default 0 projections
       }
     }));
     
+    // Wait between batches
     if (i + BATCH_SIZE < nbaPlayers.length) {
       await new Promise(r => setTimeout(r, BATCH_DELAY));
     }
   }
 }
 
-// ============================================
-// NHL ENRICHMENT — FIXED VERSION
-// ============================================
-// The NHL /player/{id}/landing endpoint returns stats in several possible locations:
-//   1. featuredStats.regularSeason.subSeason  (most common for active players)
-//   2. featuredStats.regularSeason.career      (fallback)
-//   3. careerTotals.regularSeason              (always present if player has NHL stats)
-//   4. last5Games[]                            (recent game log, can derive per-game)
-//
-// The previous code only checked #1, causing many players to show 0 projections.
-// This version checks all four sources and uses smarter batching to avoid 429s.
-
+// Fetch NHL player season stats - WITH CACHING
 async function enrichNHLPlayerAverages(players) {
   const nhlPlayers = players.filter(p => p.league === 'nhl');
   
-  // Smaller batches + longer delays to respect NHL API rate limits
-  const BATCH_SIZE = 5;
-  const BATCH_DELAY = 800;
-  
-  let enriched = 0, cached = 0, failed = 0;
+  // Process in true sequential batches to avoid NHL API rate limits
+  const BATCH_SIZE = 8;
+  const BATCH_DELAY = 500; // ms between batches
   
   for (let i = 0; i < nhlPlayers.length; i += BATCH_SIZE) {
     const batch = nhlPlayers.slice(i, i + BATCH_SIZE);
     
     await Promise.all(batch.map(async (player) => {
-      // Check cache first
-      const cacheKey = player.athleteId;
-      const cachedStats = getCached(nhlPlayerStatsCache, cacheKey, NHL_STATS_CACHE_TTL);
-      if (cachedStats) {
-        player.seasonAvg = cachedStats.seasonAvg;
-        player.projectedScore = cachedStats.projectedScore;
-        cached++;
+      const cacheKey = `nhl_stats_${player.athleteId}`;
+      
+      // Check cache first (24 hour TTL for season stats)
+      const cached = getFileCache(cacheKey, 24 * 60 * 60 * 1000);
+      if (cached) {
+        player.seasonAvg = cached.seasonAvg;
+        player.projectedScore = cached.projectedScore;
         return;
       }
 
-      const data = await fetchWithRetry(
-        `https://api-web.nhle.com/v1/player/${player.athleteId}/landing`,
-        { label: `NHL stats ${player.name}`, maxRetries: 2, baseDelay: 1000 }
-      );
-
-      if (!data) {
-        failed++;
-        return;
-      }
-
-      let gotStats = false;
-
-      // ─── Source 1: featuredStats.regularSeason.subSeason (current season) ───
-      const subSeason = data.featuredStats?.regularSeason?.subSeason;
-      if (subSeason && subSeason.gamesPlayed > 0) {
-        gotStats = extractNHLStats(player, subSeason);
-      }
-
-      // ─── Source 2: last5Games[] — derive per-game averages ───
-      if (!gotStats && data.last5Games && data.last5Games.length > 0) {
-        gotStats = extractNHLStatsFromGameLog(player, data.last5Games);
-      }
-
-      // ─── Source 3: careerTotals.regularSeason (lifetime averages) ───
-      if (!gotStats) {
-        const career = data.careerTotals?.regularSeason;
-        if (career && career.gamesPlayed > 0) {
-          gotStats = extractNHLStats(player, career);
+      // Try up to 2 times per player
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await fetch(`https://api-web.nhle.com/v1/player/${player.athleteId}/landing`);
+          if (res.status === 429) {
+            // Rate limited — wait and retry
+            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+            continue;
+          }
+          if (!res.ok) break; // skip non-rate-limit errors
+          const data = await res.json();
+          
+          // Get current season stats from featuredStats
+          const reg = data.featuredStats?.regularSeason?.subSeason;
+          if (reg) {
+            const gp = reg.gamesPlayed || 1;
+            if (player.isGoalie) {
+              player.seasonAvg = {
+                saves: Math.round((reg.saves || 0) / gp * 10) / 10,
+                goalsAgainst: Math.round((reg.goalsAgainst || 0) / gp * 10) / 10
+              };
+              player.projectedScore = Math.round(((player.seasonAvg.saves * SCORING.nhl.saves)) * 10) / 10;
+            } else {
+              player.seasonAvg = {
+                goals: Math.round((reg.goals || 0) / gp * 10) / 10,
+                assists: Math.round((reg.assists || 0) / gp * 10) / 10,
+                shotsOnGoal: Math.round((reg.shots || 0) / gp * 10) / 10,
+                blockedShots: 0  // NHL API doesn't always include this in featured stats
+              };
+              const a = player.seasonAvg;
+              player.projectedScore = Math.round(((a.goals * SCORING.nhl.goals) + (a.assists * SCORING.nhl.assists) +
+                (a.shotsOnGoal * SCORING.nhl.shotsOnGoal)) * 10) / 10;
+            }
+            
+            // Cache the result
+            setFileCache(cacheKey, {
+              seasonAvg: player.seasonAvg,
+              projectedScore: player.projectedScore
+            });
+          }
+          break; // success, no more retries
+        } catch (e) {
+          if (attempt === 0) {
+            await new Promise(r => setTimeout(r, 500));
+          }
+          // Silently fail on final attempt
         }
       }
-
-      // ─── Source 4: seasonTotals[] — find the most recent season ───
-      if (!gotStats && data.seasonTotals && data.seasonTotals.length > 0) {
-        // Find the most recent regular season entry
-        const recentSeason = data.seasonTotals
-          .filter(s => s.gameTypeId === 2) // regular season
-          .sort((a, b) => (b.season || 0) - (a.season || 0))[0];
-        if (recentSeason && recentSeason.gamesPlayed > 0) {
-          gotStats = extractNHLStats(player, recentSeason);
-        }
-      }
-
-      if (gotStats) {
-        enriched++;
-      } else {
-        failed++;
-      }
-
-      // Cache result regardless (even 0s — avoids re-fetching known-empty players)
-      setCache(nhlPlayerStatsCache, cacheKey, {
-        seasonAvg: player.seasonAvg,
-        projectedScore: player.projectedScore
-      }, 2000);
     }));
     
-    // Wait between batches
+    // Wait between batches to respect rate limits
     if (i + BATCH_SIZE < nhlPlayers.length) {
       await new Promise(r => setTimeout(r, BATCH_DELAY));
     }
-  }
-
-  console.log(`NHL enrichment: ${enriched} enriched, ${cached} from cache, ${failed} failed (${nhlPlayers.length} total)`);
-}
-
-// Extract stats from an NHL stats object (subSeason, career, or seasonTotals entry)
-// Returns true if stats were successfully extracted
-function extractNHLStats(player, statsObj) {
-  const gp = statsObj.gamesPlayed || 1;
-
-  if (player.isGoalie) {
-    // Goalie stat fields vary: saves, savePctg, goalsAgainst, shotsAgainst
-    const saves = statsObj.saves || 0;
-    const goalsAgainst = statsObj.goalsAgainst || 0;
-    // Sometimes only savePctg + shotsAgainst are available
-    const shotsAgainst = statsObj.shotsAgainst || 0;
-    const computedSaves = saves > 0 ? saves : (shotsAgainst > 0 ? shotsAgainst - goalsAgainst : 0);
-
-    player.seasonAvg = {
-      saves: Math.round((computedSaves / gp) * 10) / 10,
-      goalsAgainst: Math.round((goalsAgainst / gp) * 10) / 10
-    };
-    player.projectedScore = Math.round((player.seasonAvg.saves * SCORING.nhl.saves) * 10) / 10;
-    return player.seasonAvg.saves > 0 || player.seasonAvg.goalsAgainst > 0;
-  } else {
-    // Skater: goals, assists, shots (sometimes called 'shots', sometimes 'sog')
-    const goals = statsObj.goals || 0;
-    const assists = statsObj.assists || 0;
-    const shots = statsObj.shots || statsObj.sog || statsObj.shotsOnGoal || 0;
-    const blockedShots = statsObj.blockedShots || statsObj.blocked || 0;
-
-    player.seasonAvg = {
-      goals: Math.round((goals / gp) * 10) / 10,
-      assists: Math.round((assists / gp) * 10) / 10,
-      shotsOnGoal: Math.round((shots / gp) * 10) / 10,
-      blockedShots: Math.round((blockedShots / gp) * 10) / 10
-    };
-
-    const a = player.seasonAvg;
-    player.projectedScore = Math.round((
-      (a.goals * SCORING.nhl.goals) +
-      (a.assists * SCORING.nhl.assists) +
-      (a.shotsOnGoal * SCORING.nhl.shotsOnGoal) +
-      (a.blockedShots * SCORING.nhl.blockedShots)
-    ) * 10) / 10;
-
-    return goals > 0 || assists > 0 || shots > 0;
-  }
-}
-
-// Extract stats from last5Games array (per-game objects)
-function extractNHLStatsFromGameLog(player, games) {
-  if (!games || games.length === 0) return false;
-  const n = games.length;
-
-  if (player.isGoalie) {
-    let totalSaves = 0, totalGA = 0;
-    for (const g of games) {
-      // Goalie game log fields: savePctg, shotsAgainst, goalsAgainst, saves
-      const saves = g.saves || 0;
-      const goalsAgainst = g.goalsAgainst || 0;
-      // Compute saves from shotsAgainst if saves field missing
-      const shotsAgainst = g.shotsAgainst || 0;
-      totalSaves += saves > 0 ? saves : Math.max(0, shotsAgainst - goalsAgainst);
-      totalGA += goalsAgainst;
-    }
-    player.seasonAvg = {
-      saves: Math.round((totalSaves / n) * 10) / 10,
-      goalsAgainst: Math.round((totalGA / n) * 10) / 10
-    };
-    player.projectedScore = Math.round((player.seasonAvg.saves * SCORING.nhl.saves) * 10) / 10;
-    return totalSaves > 0;
-  } else {
-    let totalGoals = 0, totalAssists = 0, totalShots = 0, totalBlocked = 0;
-    for (const g of games) {
-      totalGoals += g.goals || 0;
-      totalAssists += g.assists || 0;
-      totalShots += g.shots || g.sog || g.shotsOnGoal || 0;
-      totalBlocked += g.blockedShots || g.blocked || 0;
-    }
-    player.seasonAvg = {
-      goals: Math.round((totalGoals / n) * 10) / 10,
-      assists: Math.round((totalAssists / n) * 10) / 10,
-      shotsOnGoal: Math.round((totalShots / n) * 10) / 10,
-      blockedShots: Math.round((totalBlocked / n) * 10) / 10
-    };
-    const a = player.seasonAvg;
-    player.projectedScore = Math.round((
-      (a.goals * SCORING.nhl.goals) +
-      (a.assists * SCORING.nhl.assists) +
-      (a.shotsOnGoal * SCORING.nhl.shotsOnGoal) +
-      (a.blockedShots * SCORING.nhl.blockedShots)
-    ) * 10) / 10;
-
-    return totalGoals > 0 || totalAssists > 0 || totalShots > 0;
   }
 }
 
 // Assign tier badges based on projected fantasy score
 function assignTierBadges(players) {
+  // Separate by league for fair comparison
   const nbaPlayers = players.filter(p => p.league === 'nba');
   const nhlPlayers = players.filter(p => p.league === 'nhl');
   
   function assignTiers(list) {
     const sorted = [...list].sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
     const total = sorted.length;
-    if (total === 0) return;
     sorted.forEach((p, i) => {
       const pct = i / total;
       if (pct < 0.1) { p.tier = 'star'; p.tierLabel = '⭐ Star'; }
       else if (pct < 0.3) { p.tier = 'starter'; p.tierLabel = '🟢 Starter'; }
       else if (pct < 0.6) { p.tier = 'solid'; p.tierLabel = '🔵 Solid'; }
       else { p.tier = 'bench'; p.tierLabel = '⚪ Bench'; }
+      // Copy tier back to original player object
       const orig = list.find(op => op.id === p.id);
       if (orig) { orig.tier = p.tier; orig.tierLabel = p.tierLabel; }
     });
@@ -900,41 +622,47 @@ function assignTierBadges(players) {
   assignTiers(nhlPlayers);
 }
 
-// ============================================
-// GAME LOG ENDPOINTS
-// ============================================
+// Game log cache - now using file-based cache with better TTL
 function getCachedGameLog(league, athleteId) {
-  return getCached(gameLogCache, `${league}-${athleteId}`, GAMELOG_CACHE_TTL);
+  return getFileCache(`gamelog_${league}_${athleteId}`, 10 * 60 * 1000); // 10 minutes
 }
 
 function setCachedGameLog(league, athleteId, data) {
-  setCache(gameLogCache, `${league}-${athleteId}`, data, 500);
+  setFileCache(`gamelog_${league}_${athleteId}`, data);
 }
 
+// Fetch last 3 game log for a player (called on-demand via API) - WITH CACHING
 async function fetchNBAGameLog(athleteId) {
+  // Check cache first
   const cached = getCachedGameLog('nba', athleteId);
   if (cached) return cached;
 
   const games = [];
 
-  // Strategy 1: ESPN athlete stats endpoint
+  // Strategy 1: ESPN athlete statistics/splits endpoint
+  // This is more reliable than the gamelog endpoint and includes recent game data
   try {
-    const data = await fetchWithRetry(
-      `https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/stats`,
-      { label: `NBA gamelog ${athleteId}`, maxRetries: 1 }
-    );
-    if (data) {
+    const res = await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/stats`);
+    if (res.ok) {
+      const data = await res.json();
+
+      // Look for a "gameLog" or recent splits in the response
+      // The stats endpoint sometimes includes splits with recent game data
       const categories = data.categories || [];
+
+      // Try to find game log data within the stats response
       for (const cat of categories) {
         if (cat.type === 'gameLog' || cat.name === 'gameLog') {
           const labels = cat.labels || [];
           const events = cat.events || [];
+
           const ptsIdx = labels.indexOf('PTS');
           const rebIdx = labels.indexOf('REB');
           const astIdx = labels.indexOf('AST');
           const stlIdx = labels.indexOf('STL');
           const blkIdx = labels.indexOf('BLK');
           const minIdx = labels.indexOf('MIN');
+
           const last3 = events.slice(-3).reverse();
           for (const evt of last3) {
             const stats = evt.stats || [];
@@ -959,22 +687,28 @@ async function fetchNBAGameLog(athleteId) {
     console.log(`NBA stats endpoint failed for ${athleteId}: ${e.message}`);
   }
 
-  // Strategy 2: ESPN gamelog endpoint
+  // Strategy 2: ESPN gamelog endpoint (the original approach, with better parsing)
   if (games.length === 0) {
     try {
-      const data = await fetchWithRetry(
-        `https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/gamelog`,
-        { label: `NBA gamelog2 ${athleteId}`, maxRetries: 1 }
-      );
-      if (data) {
+      const res = await fetch(`https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/gamelog`);
+      if (res.ok) {
+        const data = await res.json();
+
         let events = data.events || {};
         let labels = [];
         let statsByEvent = {};
+
+        // Collect stats from all possible structures
         const allCategories = [];
+
+        // Top-level categories
         if (data.categories) allCategories.push(...data.categories);
+
+        // SeasonTypes nested categories
         if (data.seasonTypes) {
           for (const season of data.seasonTypes) {
             if (season.categories) allCategories.push(...season.categories);
+            // Collect events metadata
             if (season.events) {
               for (const [eid, evtData] of Object.entries(season.events)) {
                 if (!events[eid]) events[eid] = evtData;
@@ -982,6 +716,8 @@ async function fetchNBAGameLog(athleteId) {
             }
           }
         }
+
+        // Parse categories for stats
         for (const cat of allCategories) {
           if (cat.events && cat.labels) {
             labels = cat.labels;
@@ -993,17 +729,22 @@ async function fetchNBAGameLog(athleteId) {
             }
           }
         }
+
+        // Get last 3 events with stats
         const eventsWithStats = Object.keys(statsByEvent);
         const last3 = eventsWithStats.slice(-3).reverse();
+
         const ptsIdx = labels.indexOf('PTS');
         const rebIdx = labels.indexOf('REB');
         const astIdx = labels.indexOf('AST');
         const stlIdx = labels.indexOf('STL');
         const blkIdx = labels.indexOf('BLK');
         const minIdx = labels.indexOf('MIN');
+
         for (const evtId of last3) {
           const evt = events[evtId] || {};
           const stats = statsByEvent[evtId] || [];
+
           games.push({
             date: evt.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
             opponent: formatOpponent(evt),
@@ -1023,10 +764,41 @@ async function fetchNBAGameLog(athleteId) {
     }
   }
 
+  // Strategy 3: ESPN v2 scoreboard/event summary approach
+  // Uses a different URL pattern that tends to be more stable
+  if (games.length === 0) {
+    try {
+      const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/athletes/${athleteId}`);
+      if (res.ok) {
+        const data = await res.json();
+        // Some athlete pages include recent stats
+        const stats = data.statistics;
+        if (stats && stats.splits) {
+          const lastGames = stats.splits.categories?.find(c => c.name === 'Last 5 Games' || c.name === 'Last 3 Games');
+          if (lastGames && lastGames.stats) {
+            for (const s of lastGames.stats) {
+              games.push({
+                date: '?',
+                opponent: '?',
+                stats: {
+                  points: parseFloat(s.value) || 0,
+                  rebounds: 0, assists: 0, steals: 0, blocks: 0, minutes: '0'
+                }
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // silently fail
+    }
+  }
+
   setCachedGameLog('nba', athleteId, games);
   return games;
 }
 
+// Helper to format opponent string from ESPN event data
 function formatOpponent(evt) {
   if (!evt || !evt.opponent) return '?';
   const prefix = evt.atVs === '@' || evt.homeAway === 'away' ? '@' : 'vs';
@@ -1034,18 +806,20 @@ function formatOpponent(evt) {
 }
 
 async function fetchNHLGameLog(playerId) {
+  // Check cache first
   const cached = getCachedGameLog('nhl', playerId);
   if (cached) return cached;
 
   try {
-    const data = await fetchWithRetry(
-      `https://api-web.nhle.com/v1/player/${playerId}/game-log/now`,
-      { label: `NHL gamelog ${playerId}` }
-    );
-    if (!data) return [];
+    const res = await fetch(`https://api-web.nhle.com/v1/player/${playerId}/game-log/now`);
+    if (!res.ok) {
+      console.error(`NHL game log API returned ${res.status} for player ${playerId}`);
+      return [];
+    }
+    const data = await res.json();
     
     const gameLog = data.gameLog || [];
-    const last3 = gameLog.slice(0, 3);
+    const last3 = gameLog.slice(0, 3); // NHL API returns most recent first
     
     const games = last3.map(g => ({
       date: new Date(g.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
@@ -1058,6 +832,7 @@ async function fetchNHLGameLog(playerId) {
         plusMinus: g.plusMinus || 0,
         toi: g.toi || '0:00'
       } : {
+        // Goalie
         saves: g.savePctg ? Math.round((g.shotsAgainst || 0) * (g.savePctg || 0)) : (g.saves || 0),
         goalsAgainst: g.goalsAgainst || 0,
         savePct: g.savePctg ? (g.savePctg * 100).toFixed(1) + '%' : '0%',
@@ -1077,17 +852,9 @@ async function fetchNHLGameLog(playerId) {
 // LIVE SCORING
 // ============================================
 async function fetchLiveNBAStats(gameId) {
-  // Check boxscore cache
-  const cacheKey = `nba-box-${gameId}`;
-  const cached = getCached(boxscoreCache, cacheKey, BOXSCORE_CACHE_TTL);
-  if (cached) return cached;
-
   try {
-    const data = await fetchWithRetry(
-      `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${gameId}`,
-      { label: `NBA boxscore ${gameId}`, maxRetries: 1 }
-    );
-    if (!data) return {};
+    const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${gameId}`);
+    const data = await response.json();
     
     const playerStats = {};
     
@@ -1114,8 +881,7 @@ async function fetchLiveNBAStats(gameId) {
         }
       }
     }
-
-    setCache(boxscoreCache, cacheKey, playerStats, 200);
+    
     return playerStats;
   } catch (err) {
     console.error(`Error fetching NBA stats for ${gameId}:`, err);
@@ -1124,20 +890,18 @@ async function fetchLiveNBAStats(gameId) {
 }
 
 async function fetchLiveNHLStats(gameId) {
-  const cacheKey = `nhl-box-${gameId}`;
-  const cached = getCached(boxscoreCache, cacheKey, BOXSCORE_CACHE_TTL);
-  if (cached) return cached;
-
   try {
-    const data = await fetchWithRetry(
-      `https://api-web.nhle.com/v1/gamecenter/${gameId}/boxscore`,
-      { label: `NHL boxscore ${gameId}`, maxRetries: 1 }
-    );
-    if (!data) return {};
+    const response = await fetch(`https://api-web.nhle.com/v1/gamecenter/${gameId}/boxscore`);
+    if (!response.ok) {
+      console.error(`NHL boxscore API returned ${response.status} for game ${gameId}`);
+      return {};
+    }
+    const data = await response.json();
     
     const playerStats = {};
     
     for (const side of ['homeTeam', 'awayTeam']) {
+      // Forwards and defensemen
       for (const posGroup of ['forwards', 'defense']) {
         for (const player of (data[side]?.[posGroup] || [])) {
           playerStats[`nhl-${player.playerId}`] = {
@@ -1149,6 +913,7 @@ async function fetchLiveNHLStats(gameId) {
         }
       }
       
+      // Goalies
       for (const player of (data[side]?.goalies || [])) {
         playerStats[`nhl-${player.playerId}`] = {
           saves: player.saveShotsAgainst ? 
@@ -1158,8 +923,7 @@ async function fetchLiveNHLStats(gameId) {
         };
       }
     }
-
-    setCache(boxscoreCache, cacheKey, playerStats, 200);
+    
     return playerStats;
   } catch (err) {
     console.error(`Error fetching NHL stats for ${gameId}:`, err);
@@ -1178,6 +942,7 @@ function calculateFantasyScore(player) {
     score += (s.steals || 0) * SCORING.nba.steals;
     score += (s.blocks || 0) * SCORING.nba.blocks;
     
+    // Double-double check (2+ categories with 10+)
     const cats = [s.points, s.rebounds, s.assists, s.steals, s.blocks].filter(v => v >= 10);
     if (cats.length >= 2) score += SCORING.nba.doubleDouble;
     if (cats.length >= 3) score += SCORING.nba.tripleDouble;
@@ -1209,6 +974,7 @@ async function updateLiveScores(lobbyId) {
   const lobby = lobbies[lobbyId];
   if (!lobby || lobby.state !== 'live') return;
   
+  // Gather unique game IDs
   const nbaGameIds = new Set();
   const nhlGameIds = new Set();
   
@@ -1219,15 +985,23 @@ async function updateLiveScores(lobbyId) {
     }
   }
   
+  // Fetch stats for all relevant games
   const allStats = {};
   
-  // Fetch all boxscores in parallel (within each league)
-  const nbaPromises = [...nbaGameIds].map(id => fetchLiveNBAStats(id).then(s => Object.assign(allStats, s)));
-  const nhlPromises = [...nhlGameIds].map(id => fetchLiveNHLStats(id).then(s => Object.assign(allStats, s)));
-  await Promise.all([...nbaPromises, ...nhlPromises]);
+  for (const gameId of nbaGameIds) {
+    const stats = await fetchLiveNBAStats(gameId);
+    Object.assign(allStats, stats);
+  }
   
+  for (const gameId of nhlGameIds) {
+    const stats = await fetchLiveNHLStats(gameId);
+    Object.assign(allStats, stats);
+  }
+  
+  // Update player stats and scores
   for (const player of lobby.players) {
     let totalScore = 0;
+    
     for (const pick of player.roster || []) {
       if (allStats[pick.id]) {
         pick.stats = allStats[pick.id];
@@ -1236,10 +1010,11 @@ async function updateLiveScores(lobbyId) {
       pick.fantasyScore = calculateFantasyScore(pick);
       totalScore += pick.fantasyScore;
     }
+    
     player.totalScore = Math.round(totalScore * 10) / 10;
   }
   
-  // Check game states (use schedule cache — at most 1 fetch per league per 2 min)
+  // Check if all games are finished (fetch schedule once per league, not per game)
   let allFinished = true;
   const hasNBA = lobby.games.some(g => g.league === 'nba');
   const hasNHL = lobby.games.some(g => g.league === 'nhl');
@@ -1248,6 +1023,7 @@ async function updateLiveScores(lobbyId) {
     hasNHL ? fetchNHLGames(lobby.gameDate) : Promise.resolve([])
   ]);
 
+  // Now sync game status from schedule to individual picks for frontend display
   const gameStatusMap = {};
   for (const g of nbaSchedule) gameStatusMap[g.gameId] = g.status || g.state;
   for (const g of nhlSchedule) gameStatusMap[g.gameId] = g.status || g.state;
@@ -1263,22 +1039,29 @@ async function updateLiveScores(lobbyId) {
   for (const game of lobby.games) {
     if (game.league === 'nba') {
       const found = nbaSchedule.find(g => g.gameId === game.gameId);
-      if (found) { game.state = found.state; game.status = found.status; }
+      if (found) {
+        game.state = found.state;
+        game.status = found.status;
+      }
       if (!found || found.state !== 'post') allFinished = false;
     }
     if (game.league === 'nhl') {
       const found = nhlSchedule.find(g => g.gameId === game.gameId);
-      if (found) { game.state = found.state; game.status = found.status; }
+      if (found) {
+        game.state = found.state;
+        game.status = found.status;
+      }
       if (!found || (found.state !== 'OFF' && found.state !== 'FINAL')) allFinished = false;
     }
   }
   
-  // Adaptive polling: slow when no games started, fast when live
+  // If no games have started yet (future date draft), slow the polling
   const anyStarted = lobby.games.some(g =>
     (g.league === 'nba' && g.state !== 'pre') ||
     (g.league === 'nhl' && g.state !== 'FUT')
   );
   if (!anyStarted && !allFinished) {
+    // Switch to slow polling (every 5 min) until games start
     if (lobby.scoreInterval && !lobby._slowPolling) {
       clearInterval(lobby.scoreInterval);
       lobby._slowPolling = true;
@@ -1286,6 +1069,7 @@ async function updateLiveScores(lobbyId) {
       console.log(`Lobby ${lobbyId}: games haven't started, slowing poll to 5min`);
     }
   } else if (anyStarted && lobby._slowPolling) {
+    // Games started — switch back to fast polling
     clearInterval(lobby.scoreInterval);
     lobby._slowPolling = false;
     lobby.scoreInterval = setInterval(() => updateLiveScores(lobbyId), SCORE_UPDATE_INTERVAL);
@@ -1298,6 +1082,7 @@ async function updateLiveScores(lobbyId) {
     lobby.scoreInterval = null;
   }
   
+  // Emit updated scores to all players
   io.to(lobbyId).emit('scoreUpdate', {
     players: lobby.players.map(p => ({
       id: p.id,
@@ -1319,7 +1104,9 @@ function sanitizeName(name) {
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
   
+  // Create a new lobby
   socket.on('createLobby', async ({ playerName, maxPlayers, isPublic, settings, sessionId }) => {
+    // Prevent double-create: if this session is already in a lobby, ignore
     if (sessions[sessionId] && lobbies[sessions[sessionId].lobbyId]) {
       return socket.emit('error', { message: 'You are already in a game' });
     }
@@ -1352,6 +1139,7 @@ io.on('connection', (socket) => {
     console.log(`Lobby ${lobby.id} created by ${playerName} (session ${sessionId})`);
   });
 
+  // Host updates lobby settings
   socket.on('updateSettings', ({ settings }) => {
     const lobby = lobbies[socket.lobbyId];
     if (!lobby || socket.sessionId !== lobby.host || lobby.state !== 'waiting') return;
@@ -1379,11 +1167,13 @@ io.on('connection', (socket) => {
     io.to(lobby.id).emit('lobbyUpdate', getLobbyState(lobby));
   });
   
+  // Join existing lobby
   socket.on('joinLobby', ({ lobbyId, playerName, sessionId }) => {
     const code = lobbyId.toUpperCase();
     const safeName = sanitizeName(playerName);
     const lobby = lobbies[code];
     
+    // Prevent joining if already in a lobby
     if (sessions[sessionId] && lobbies[sessions[sessionId].lobbyId]) {
       return socket.emit('error', { message: 'You are already in a game' });
     }
@@ -1413,6 +1203,7 @@ io.on('connection', (socket) => {
     
     sessions[sessionId] = { lobbyId: code, socketId: socket.id, playerName: safeName };
     
+    // Remove from public lobbies if full
     if (lobby.players.length >= lobby.maxPlayers) {
       const idx = publicLobbies.indexOf(code);
       if (idx !== -1) publicLobbies.splice(idx, 1);
@@ -1422,6 +1213,7 @@ io.on('connection', (socket) => {
     console.log(`${playerName} joined lobby ${code} (session ${sessionId})`);
   });
   
+  // Rejoin after disconnect/refresh
   socket.on('rejoin', ({ sessionId }) => {
     const session = sessions[sessionId];
     if (!session) {
@@ -1440,6 +1232,7 @@ io.on('connection', (socket) => {
       return socket.emit('rejoinFailed', { reason: 'player_gone' });
     }
     
+    // Update mappings
     session.socketId = socket.id;
     socket.lobbyId = lobby.id;
     socket.sessionId = sessionId;
@@ -1458,6 +1251,7 @@ io.on('connection', (socket) => {
         sessionId
       });
     } else if (lobby.state === 'drafting') {
+      // Calculate remaining time on current pick
       const elapsed = lobby.pickStartedAt ? Math.floor((Date.now() - lobby.pickStartedAt) / 1000) : 0;
       const timeRemaining = Math.max((lobby.settings.timePerPick || 30) - elapsed, 1);
       
@@ -1496,8 +1290,10 @@ io.on('connection', (socket) => {
     console.log(`${player.name} rejoined lobby ${lobby.id} (session ${sessionId})`);
   });
   
+  // Find a public lobby
   socket.on('findPublicLobby', ({ playerName }) => {
     let found = null;
+    
     for (const lobbyId of publicLobbies) {
       const lobby = lobbies[lobbyId];
       if (lobby && lobby.state === 'waiting' && lobby.players.length < lobby.maxPlayers) {
@@ -1505,6 +1301,7 @@ io.on('connection', (socket) => {
         break;
       }
     }
+    
     if (found) {
       socket.emit('publicLobbyFound', { lobbyId: found });
     } else {
@@ -1512,11 +1309,12 @@ io.on('connection', (socket) => {
     }
   });
   
+  // Host starts the draft
   socket.on('startDraft', async () => {
     const lobby = lobbies[socket.lobbyId];
     if (!lobby) return;
     if (socket.sessionId !== lobby.host) return;
-    if (lobby.state === 'drafting') return;
+    if (lobby.state === 'drafting') return; // prevent double-start
     if (lobby.players.length < 1) {
       return socket.emit('error', { message: 'Need at least 1 player' });
     }
@@ -1524,8 +1322,10 @@ io.on('connection', (socket) => {
     lobby.state = 'drafting';
     const { draftType, timePerPick, leagues, gameDate } = lobby.settings;
     
+    // Notify all clients that draft is loading
     io.to(lobby.id).emit('draftLoading', { message: 'Fetching games & players...' });
     
+    // Fetch games for the target date based on league setting
     const fetchNBA = leagues === 'nba' || leagues === 'both';
     const fetchNHL = leagues === 'nhl' || leagues === 'both';
     
@@ -1534,13 +1334,16 @@ io.on('connection', (socket) => {
       fetchNHL ? fetchNHLGames(gameDate) : Promise.resolve([])
     ]);
     
+    // For future dates, all games are draftable.
+    // For today, allow upcoming AND in-progress games (exclude only finished).
     const todayISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
     const isFutureDate = gameDate && gameDate !== todayISO;
     const upcomingNBA = isFutureDate ? nbaGames : nbaGames.filter(g => g.state !== 'post');
     const upcomingNHL = isFutureDate ? nhlGames : nhlGames.filter(g => g.state !== 'OFF' && g.state !== 'FINAL');
     
+    // Store ALL games for live scoring later
     lobby.games = [...nbaGames, ...nhlGames];
-    lobby.gameDate = gameDate;
+    lobby.gameDate = gameDate; // remember which date we're tracking
     
     if (upcomingNBA.length === 0 && upcomingNHL.length === 0) {
       lobby.state = 'waiting';
@@ -1563,14 +1366,16 @@ io.on('connection', (socket) => {
       return socket.emit('error', { message: 'No players available to draft. Try again when there are upcoming games.' });
     }
     
+    // Enrich players with season averages (runs in sequential batches) - NOW WITH CACHING
     io.to(lobby.id).emit('draftLoading', { message: `Loading stats for ${nbaPlayers.length + nhlPlayers.length} players...` });
-    console.log(`Enriching ${nbaPlayers.length} NBA + ${nhlPlayers.length} NHL players with season stats...`);
+    console.log(`Enriching ${nbaPlayers.length} NBA + ${nhlPlayers.length} NHL players with season stats (using file cache)...`);
     await Promise.all([
       nbaPlayers.length > 0 ? enrichNBAPlayerAverages(lobby.availablePlayers) : Promise.resolve(),
       nhlPlayers.length > 0 ? enrichNHLPlayerAverages(lobby.availablePlayers) : Promise.resolve()
     ]);
     
-    // Filter NBA players to top 6 per team
+    // Filter NBA players to top 6 per team (by projected score)
+    // This keeps the draft pool focused on meaningful players and reduces API load
     const NBA_PLAYERS_PER_TEAM = 6;
     const nbaByTeamGame = {};
     const nonNba = [];
@@ -1595,11 +1400,15 @@ io.on('connection', (socket) => {
       console.log(`Trimmed ${trimmedCount} low-value NBA players (kept top ${NBA_PLAYERS_PER_TEAM}/team)`);
     }
     
+    // Assign tier badges based on projected score
     assignTierBadges(lobby.availablePlayers);
+    
+    // Sort by projected score descending (best players first)
     lobby.availablePlayers.sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
     
     console.log(`Draft pool ready: ${upcomingNBA.length} NBA games (${filteredNba.length} players), ${upcomingNHL.length} NHL games (${nonNba.length} players) | Settings: ${draftType} draft, ${timePerPick}s/pick, leagues=${leagues}, slots=${JSON.stringify(lobby.settings.rosterSlots)}`);
     
+    // Randomize player order then generate draft order
     const rosterSize = getRosterSize(lobby.settings);
     const shuffled = [...lobby.players].sort(() => Math.random() - 0.5);
     lobby.draftOrder = generateDraftOrder(shuffled, rosterSize, draftType);
@@ -1622,23 +1431,29 @@ io.on('connection', (socket) => {
         }))
     });
     
+    // Start draft timer
     startDraftTimer(lobby);
+    
     console.log(`Draft started in lobby ${lobby.id}`);
   });
   
+  // Player makes a draft pick
   socket.on('draftPick', ({ playerId }) => {
     const lobby = lobbies[socket.lobbyId];
     if (!lobby || lobby.state !== 'drafting') return;
     
+    // Check it's this player's turn
     const currentDrafter = lobby.draftOrder[lobby.currentPick];
     if (socket.sessionId !== currentDrafter) return;
     
+    // Check player is available
     const playerIdx = lobby.availablePlayers.findIndex(p => p.id === playerId);
     if (playerIdx === -1) return;
     
     const picked = lobby.availablePlayers[playerIdx];
     const drafter = lobby.players.find(p => p.id === socket.sessionId);
     
+    // Enforce league roster slots
     const slots = lobby.settings.rosterSlots || { nba: 10, nhl: 10 };
     const leagues = lobby.settings.leagues;
     if (leagues === 'both' || leagues === picked.league) {
@@ -1649,14 +1464,17 @@ io.on('connection', (socket) => {
       }
     }
     
+    // Make the pick
     lobby.availablePlayers.splice(playerIdx, 1);
     drafter.roster.push(picked);
     
+    // Clear timer
     if (lobby.draftTimer) {
       clearTimeout(lobby.draftTimer);
       lobby.draftTimer = null;
     }
     
+    // Advance to next pick
     lobby.currentPick++;
     
     io.to(lobby.id).emit('pickMade', {
@@ -1671,9 +1489,11 @@ io.on('connection', (socket) => {
       }))
     });
     
+    // Check if draft is complete
     if (lobby.currentPick >= lobby.draftOrder.length) {
       endDraft(lobby);
     } else {
+      // Next pick
       io.to(lobby.id).emit('nextPick', {
         currentPick: lobby.currentPick,
         currentDrafter: lobby.draftOrder[lobby.currentPick],
@@ -1683,13 +1503,17 @@ io.on('connection', (socket) => {
     }
   });
   
+  // Chat message
   socket.on('chatMessage', ({ message }) => {
     const lobby = lobbies[socket.lobbyId];
     if (!lobby) return;
+    
     const player = lobby.players.find(p => p.id === socket.sessionId);
     if (!player) return;
+    
     const safeMsg = String(message || '').replace(/[<>"'&]/g, '').trim().slice(0, 300);
     if (!safeMsg) return;
+    
     io.to(lobby.id).emit('chatMessage', {
       from: player.name,
       message: safeMsg,
@@ -1697,6 +1521,7 @@ io.on('connection', (socket) => {
     });
   });
   
+  // Disconnect
   socket.on('disconnect', () => {
     const lobbyId = socket.lobbyId;
     const sessionId = socket.sessionId;
@@ -1705,14 +1530,17 @@ io.on('connection', (socket) => {
     const lobby = lobbies[lobbyId];
     
     if (lobby.state === 'waiting') {
+      // Remove player from lobby
       lobby.players = lobby.players.filter(p => p.id !== sessionId);
       if (sessionId) delete sessions[sessionId];
       
       if (lobby.players.length === 0) {
+        // Delete empty lobby
         delete lobbies[lobbyId];
         const idx = publicLobbies.indexOf(lobbyId);
         if (idx !== -1) publicLobbies.splice(idx, 1);
       } else {
+        // Transfer host if needed
         if (lobby.host === sessionId) {
           lobby.host = lobby.players[0].id;
           lobby.players[0].isHost = true;
@@ -1720,6 +1548,7 @@ io.on('connection', (socket) => {
         io.to(lobbyId).emit('lobbyUpdate', getLobbyState(lobby));
       }
     } else {
+      // During draft/live, mark as disconnected but keep session for rejoin
       const player = lobby.players.find(p => p.id === sessionId);
       if (player) {
         player.disconnected = true;
@@ -1736,8 +1565,9 @@ io.on('connection', (socket) => {
 // ============================================
 function startDraftTimer(lobby) {
   const timePerPick = lobby.settings.timePerPick || 30;
-  lobby.pickStartedAt = Date.now();
+  lobby.pickStartedAt = Date.now(); // track for reconnection
   lobby.draftTimer = setTimeout(() => {
+    // Auto-pick: best available player that fits roster slots
     const currentDrafter = lobby.draftOrder[lobby.currentPick];
     const drafter = lobby.players.find(p => p.id === currentDrafter);
     
@@ -1746,12 +1576,13 @@ function startDraftTimer(lobby) {
       const nbaCount = (drafter.roster || []).filter(r => r.league === 'nba').length;
       const nhlCount = (drafter.roster || []).filter(r => r.league === 'nhl').length;
       
+      // Find best available that fits a league slot
       let autoIdx = lobby.availablePlayers.findIndex(p => {
         if (p.league === 'nba' && nbaCount >= (slots.nba || 0)) return false;
         if (p.league === 'nhl' && nhlCount >= (slots.nhl || 0)) return false;
         return true;
       });
-      if (autoIdx === -1) autoIdx = 0;
+      if (autoIdx === -1) autoIdx = 0; // fallback
       
       const autoPick = lobby.availablePlayers.splice(autoIdx, 1)[0];
       drafter.roster.push(autoPick);
@@ -1782,6 +1613,7 @@ function startDraftTimer(lobby) {
         startDraftTimer(lobby);
       }
     } else {
+      // No players left or drafter not found — end draft early
       console.log(`Lobby ${lobby.id}: player pool exhausted or drafter missing, ending draft early`);
       endDraft(lobby);
     }
@@ -1805,11 +1637,14 @@ function endDraft(lobby) {
     }))
   });
   
+  // Start live score updates
   lobby.scoreInterval = setInterval(() => {
     updateLiveScores(lobby.id);
   }, SCORE_UPDATE_INTERVAL);
   
+  // Initial score fetch
   updateLiveScores(lobby.id);
+  
   console.log(`Draft complete in lobby ${lobby.id}, live scoring started`);
 }
 
@@ -1838,6 +1673,8 @@ function getLobbyState(lobby) {
 // ============================================
 // REST API ROUTES
 // ============================================
+
+// Get public lobbies
 app.get('/api/lobbies', (req, res) => {
   const available = publicLobbies
     .map(id => lobbies[id])
@@ -1848,22 +1685,27 @@ app.get('/api/lobbies', (req, res) => {
       players: l.players.length,
       maxPlayers: l.maxPlayers
     }));
+  
   res.json(available);
 });
 
+// Get today's games (for display)
 app.get('/api/games', async (req, res) => {
-  const targetDate = req.query.date || null;
+  const targetDate = req.query.date || null; // ISO date string or null for today
   const [nbaGames, nhlGames] = await Promise.all([
     fetchNBAGames(targetDate),
     fetchNHLGames(targetDate)
   ]);
+  
   res.json([...nbaGames, ...nhlGames]);
 });
 
+// Get scoring rules
 app.get('/api/scoring', (req, res) => {
   res.json(SCORING);
 });
 
+// Get player game log (last 3 games) — with caching
 app.get('/api/gamelog/:league/:athleteId', async (req, res) => {
   const { league, athleteId } = req.params;
   try {
@@ -1882,43 +1724,13 @@ app.get('/api/gamelog/:league/:athleteId', async (req, res) => {
   }
 });
 
-// Cache stats endpoint — for debugging/monitoring
-app.get('/api/cache-stats', (req, res) => {
-  const cacheFileExists = fs.existsSync(CACHE_FILE);
-  let cacheFileSize = 0, cacheFileAge = null;
-  if (cacheFileExists) {
-    const stat = fs.statSync(CACHE_FILE);
-    cacheFileSize = Math.round(stat.size / 1024);
-    cacheFileAge = Math.round((Date.now() - stat.mtimeMs) / 1000);
-  }
-  res.json({
-    memory: {
-      nhlPlayerStats: nhlPlayerStatsCache.size,
-      nbaPlayerStats: nbaPlayerStatsCache.size,
-      schedule: scheduleCache.size,
-      gameLog: gameLogCache.size,
-      boxscore: boxscoreCache.size,
-      nhlRoster: nhlRosterCache.size,
-      nbaRoster: nbaRosterCache.size,
-    },
-    disk: {
-      file: CACHE_FILE,
-      exists: cacheFileExists,
-      sizeKB: cacheFileSize,
-      ageSeconds: cacheFileAge,
-    },
-    activeLobbies: Object.keys(lobbies).length,
-    activeSessions: Object.keys(sessions).length
-  });
-});
-
 // ============================================
 // CLEANUP - Remove stale lobbies every 5 minutes
 // ============================================
 setInterval(() => {
   const now = Date.now();
-  const staleTime = 4 * 60 * 60 * 1000;
-  const finishedTime = 30 * 60 * 1000;
+  const staleTime = 4 * 60 * 60 * 1000; // 4 hours for active lobbies
+  const finishedTime = 30 * 60 * 1000;   // 30 min for finished lobbies
   
   for (const [id, lobby] of Object.entries(lobbies)) {
     const isOld = now - lobby.createdAt > staleTime;
@@ -1928,30 +1740,24 @@ setInterval(() => {
     if (isOld || isFinishedOld || allDisconnected) {
       if (lobby.scoreInterval) clearInterval(lobby.scoreInterval);
       if (lobby.draftTimer) clearTimeout(lobby.draftTimer);
+      // Clean up sessions for this lobby's players
       for (const p of lobby.players) {
         delete sessions[p.id];
       }
       delete lobbies[id];
+      
       const idx = publicLobbies.indexOf(id);
       if (idx !== -1) publicLobbies.splice(idx, 1);
+      
       console.log(`Cleaned up lobby ${id} (${isOld?'stale':isFinishedOld?'finished':'all disconnected'})`);
     }
   }
-
-  // Prune old cache entries periodically
-  const pruneCacheTTL = (cache, ttl) => {
-    for (const [key, entry] of cache) {
-      if (now - entry.timestamp > ttl) cache.delete(key);
-    }
-  };
-  // Persistent caches — use their declared TTL
-  for (const { cache, ttl } of Object.values(PERSISTENT_CACHES)) {
-    pruneCacheTTL(cache, ttl);
-  }
-  // Ephemeral caches
-  pruneCacheTTL(scheduleCache, SCHEDULE_CACHE_TTL * 3);
-  pruneCacheTTL(boxscoreCache, BOXSCORE_CACHE_TTL * 3);
 }, 5 * 60 * 1000);
+
+// Cleanup old cache files every hour
+setInterval(() => {
+  cleanupOldCache();
+}, 60 * 60 * 1000);
 
 // ============================================
 // START SERVER
@@ -1959,4 +1765,5 @@ setInterval(() => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Draft Royale running on port ${PORT}`);
+  console.log(`Cache directory: ${CACHE_DIR}`);
 });

@@ -799,6 +799,9 @@ function renderRecap(players) {
 }
 
 function goToLive() {
+  // Save current game as 'live' so user can return to home screen
+  saveActiveGame(myLobbyId, 'live', myName);
+  
   // Redirect to standalone live.html page
   window.location.href = `/live.html?lobby=${myLobbyId}`;
 }

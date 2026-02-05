@@ -221,18 +221,15 @@ function renderActiveGames(players) {
   }
   
   scroll.innerHTML = games.map(g => {
-    const isLive = g.gameStatus && (g.gameStatus.includes('LIVE') || g.gameStatus.includes('Q') || g.gameStatus.includes('Half') || g.gameStatus.includes('Period'));
+    const isLive = g.gameStatus && (g.gameStatus.includes('LIVE') || g.gameStatus.includes('Q') || g.gameStatus.includes('Half'));
     const isFinal = g.gameStatus && (g.gameStatus.includes('Final') || g.gameStatus.includes('OFF'));
     const timeClass = isLive ? 'live' : isFinal ? 'final' : 'upcoming';
-    
-    // Display game status as-is (it already includes time info from server)
-    const displayStatus = g.gameStatus || 'Scheduled';
     
     return `
       <div class="game-chip">
         <div class="game-chip-league ${g.league}">${g.league.toUpperCase()}</div>
         <div class="game-chip-matchup">${g.teams}</div>
-        <div class="game-chip-time ${timeClass}">${displayStatus}</div>
+        <div class="game-chip-time ${timeClass}">${g.gameStatus || 'Scheduled'}</div>
       </div>
     `;
   }).join('');
@@ -381,10 +378,10 @@ function renderStatGrid(pick) {
       if ((s.goalsAgainst||0) === 0 && (s.saves||0) > 0) bonuses.push('Shutout +5');
     } else {
       const stats = [
-        { label: 'G', val: s.goals||0, mult: 5 },
-        { label: 'A', val: s.assists||0, mult: 3 },
-        { label: 'SOG', val: s.shotsOnGoal||0, mult: 1 },
-        { label: 'BLK', val: s.blockedShots||0, mult: 2 },
+        { label: 'G', val: s.goals||0, mult: 9 },
+        { label: 'A', val: s.assists||0, mult: 6 },
+        { label: 'SOG', val: s.shotsOnGoal||0, mult: 3 },
+        { label: 'BLK', val: s.blockedShots||0, mult: 5 },
       ];
       cells = stats.map(st => {
         const pts = st.val * st.mult;

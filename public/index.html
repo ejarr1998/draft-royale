@@ -347,5 +347,19 @@
       localStorage.setItem('dr_isPWA', 'true');
     }
   </script>
+
+  <!-- Games Lobby Modal (View All Active Games) -->
+  <div id="gamesLobbyModal" class="modal-overlay" style="display:none;" onclick="if(event.target === this) closeGamesLobby()">
+    <div class="games-lobby-modal">
+      <div class="glm-header">
+        <h2>Your Active Games</h2>
+        <button class="glm-close-btn" onclick="closeGamesLobby()">✕</button>
+      </div>
+      <div class="glm-body" id="gamesLobbyList">
+        <!-- Games populated by showGamesLobby() -->
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>

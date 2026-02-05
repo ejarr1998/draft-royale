@@ -221,15 +221,18 @@ function renderActiveGames(players) {
   }
   
   scroll.innerHTML = games.map(g => {
-    const isLive = g.gameStatus && (g.gameStatus.includes('LIVE') || g.gameStatus.includes('Q') || g.gameStatus.includes('Half'));
+    const isLive = g.gameStatus && (g.gameStatus.includes('LIVE') || g.gameStatus.includes('Q') || g.gameStatus.includes('Half') || g.gameStatus.includes('Period'));
     const isFinal = g.gameStatus && (g.gameStatus.includes('Final') || g.gameStatus.includes('OFF'));
     const timeClass = isLive ? 'live' : isFinal ? 'final' : 'upcoming';
+    
+    // Display game status as-is (it already includes time info from server)
+    const displayStatus = g.gameStatus || 'Scheduled';
     
     return `
       <div class="game-chip">
         <div class="game-chip-league ${g.league}">${g.league.toUpperCase()}</div>
         <div class="game-chip-matchup">${g.teams}</div>
-        <div class="game-chip-time ${timeClass}">${g.gameStatus || 'Scheduled'}</div>
+        <div class="game-chip-time ${timeClass}">${displayStatus}</div>
       </div>
     `;
   }).join('');

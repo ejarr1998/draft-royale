@@ -1500,13 +1500,41 @@ io.on('connection', (socket) => {
     }
   });
   
-  socket.on('startDraft', async () => {
+  socket.on('startDraft', async ({ settings }) => {
     const lobby = lobbies[socket.lobbyId];
     if (!lobby) return;
     if (socket.sessionId !== lobby.host) return;
     if (lobby.state === 'drafting') return;
     if (lobby.players.length < 1) {
       return socket.emit('error', { message: 'Need at least 1 player' });
+    }
+    
+    // ⭐ APPLY SETTINGS FROM CLIENT ⭐
+    if (settings) {
+      lobby.settings = {
+        draftType: settings.draftType || 'snake',
+        timePerPick: Math.min(120, Math.max(10, settings.timePerPick || 30)),
+        rosterSlots: {
+          nba: Math.min(10, Math.max(0, settings.rosterSlots?.nba || 4)),
+          nhl: Math.min(10, Math.max(0, settings.rosterSlots?.nhl || 2))
+        },
+        leagues: settings.leagues || 'both',
+        gameDate: settings.gameDate || null
+      };
+      // Also update lobby-level properties
+      if (settings.maxPlayers !== undefined) {
+        lobby.maxPlayers = Math.min(8, Math.max(1, settings.maxPlayers));
+      }
+      if (settings.isPublic !== undefined) {
+        lobby.isPublic = settings.isPublic;
+        const idx = publicLobbies.indexOf(lobby.id);
+        if (settings.isPublic && idx === -1) {
+          publicLobbies.push(lobby.id);
+        }
+        if (!settings.isPublic && idx !== -1) {
+          publicLobbies.splice(idx, 1);
+        }
+      }
     }
     
     lobby.state = 'drafting';

@@ -403,6 +403,73 @@ body::before {
   letter-spacing: 0.3px;
 }
 
+/* Injury Status Banner (in modal) */
+.injury-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.injury-icon {
+  font-size: 1.2rem;
+}
+
+.injury-out {
+  background: rgba(255, 61, 90, 0.1);
+  border-color: rgba(255, 61, 90, 0.3);
+  color: var(--red);
+}
+
+.injury-questionable {
+  background: rgba(255, 215, 64, 0.1);
+  border-color: rgba(255, 215, 64, 0.3);
+  color: var(--gold);
+}
+
+.injury-probable {
+  background: rgba(0, 180, 216, 0.1);
+  border-color: rgba(0, 180, 216, 0.3);
+  color: var(--nhl);
+}
+
+.injury-text {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Compact injury badge (in player cards) */
+.pc-injury {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 3px;
+}
+
+.pc-injury.inj-out {
+  background: rgba(255, 61, 90, 0.15);
+  color: var(--red);
+}
+
+.pc-injury.inj-questionable {
+  background: rgba(255, 215, 64, 0.15);
+  color: var(--gold);
+}
+
+.pc-injury.inj-probable {
+  background: rgba(0, 180, 216, 0.15);
+  color: var(--nhl);
+}
+
 /* DRAFT */
 .draft-bar {
   display: flex; align-items: center; justify-content: space-between;

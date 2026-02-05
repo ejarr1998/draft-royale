@@ -1201,31 +1201,26 @@ io.on('connection', (socket) => {
   });
 
   // Host updates lobby settings
-  socket.on('updateSettings', ({ settings }) => {
+  // Lightweight settings preview relay — host broadcasts a summary string
+  // to guests so they can see what's configured. No server state is mutated.
+  socket.on('settingsPreview', ({ summary, maxPlayers, isPublic }) => {
     const lobby = lobbies[socket.lobbyId];
     if (!lobby || socket.sessionId !== lobby.host || lobby.state !== 'waiting') return;
     
-    if (settings.maxPlayers !== undefined) {
-      lobby.maxPlayers = Math.min(Math.max(settings.maxPlayers, 1), 8);
+    // Update maxPlayers on the server so player slot rendering stays correct
+    // (this is the one setting that affects lobby join logic)
+    if (maxPlayers !== undefined) {
+      lobby.maxPlayers = Math.min(Math.max(maxPlayers, 1), 8);
     }
-    if (settings.isPublic !== undefined) {
-      lobby.isPublic = settings.isPublic;
+    if (isPublic !== undefined) {
+      lobby.isPublic = isPublic;
       const idx = publicLobbies.indexOf(lobby.id);
-      if (settings.isPublic && idx === -1) publicLobbies.push(lobby.id);
-      if (!settings.isPublic && idx !== -1) publicLobbies.splice(idx, 1);
+      if (isPublic && idx === -1) publicLobbies.push(lobby.id);
+      if (!isPublic && idx !== -1) publicLobbies.splice(idx, 1);
     }
-    if (settings.draftType) lobby.settings.draftType = settings.draftType;
-    if (settings.timePerPick) lobby.settings.timePerPick = Math.min(Math.max(settings.timePerPick, 10), 120);
-    if (settings.leagues) lobby.settings.leagues = settings.leagues;
-    if (settings.rosterSlots) {
-      lobby.settings.rosterSlots = {
-        nba: Math.min(Math.max(settings.rosterSlots.nba || 0, 0), 10),
-        nhl: Math.min(Math.max(settings.rosterSlots.nhl || 0, 0), 10),
-      };
-    }
-    if (settings.gameDate !== undefined) lobby.settings.gameDate = settings.gameDate;
     
-    io.to(lobby.id).emit('lobbyUpdate', getLobbyState(lobby));
+    // Forward preview to everyone else in the lobby (not back to the host)
+    socket.to(lobby.id).emit('settingsPreview', { summary, maxPlayers });
   });
   
   // Join existing lobby
@@ -1366,14 +1361,30 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Host starts the draft
-  socket.on('startDraft', async () => {
+  // Host starts the draft — settings are sent NOW, not during lobby config
+  socket.on('startDraft', async ({ settings } = {}) => {
     const lobby = lobbies[socket.lobbyId];
     if (!lobby) return;
     if (socket.sessionId !== lobby.host) return;
     if (lobby.state === 'drafting' || lobby.state === 'live') return; // prevent double-start
     if (lobby.players.length < 1) {
       return socket.emit('error', { message: 'Need at least 1 player' });
+    }
+    
+    // ── Apply settings from host client ──
+    if (settings) {
+      if (settings.draftType) lobby.settings.draftType = settings.draftType;
+      if (settings.timePerPick) lobby.settings.timePerPick = Math.min(Math.max(settings.timePerPick, 10), 120);
+      if (settings.leagues) lobby.settings.leagues = settings.leagues;
+      if (settings.rosterSlots) {
+        lobby.settings.rosterSlots = {
+          nba: Math.min(Math.max(settings.rosterSlots.nba || 0, 0), 10),
+          nhl: Math.min(Math.max(settings.rosterSlots.nhl || 0, 0), 10),
+        };
+      }
+      if (settings.gameDate !== undefined) lobby.settings.gameDate = settings.gameDate;
+      if (settings.maxPlayers !== undefined) lobby.maxPlayers = Math.min(Math.max(settings.maxPlayers, 1), 8);
+      if (settings.isPublic !== undefined) lobby.isPublic = settings.isPublic;
     }
     
     lobby.state = 'drafting';

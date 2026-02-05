@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Offline - Draft Royale</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    
+    .offline-container {
+      text-align: center;
+      max-width: 500px;
+    }
+    
+    .offline-icon {
+      font-size: 5rem;
+      margin-bottom: 20px;
+      animation: float 3s ease-in-out infinite;
+    }
+    
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-20px); }
+    }
+    
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 12px;
+      color: #ff5722;
+    }
+    
+    p {
+      font-size: 1.1rem;
+      color: #999;
+      margin-bottom: 30px;
+      line-height: 1.6;
+    }
+    
+    .btn {
+      padding: 14px 28px;
+      background: #ff5722;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+      display: inline-block;
+    }
+    
+    .btn:hover {
+      background: #ff6d3f;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(255, 87, 34, 0.4);
+    }
+    
+    .status {
+      margin-top: 40px;
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 10px;
+      font-size: 0.9rem;
+      color: #666;
+    }
+    
+    .online {
+      color: #4cd964;
+    }
+  </style>
+</head>
+<body>
+  <div class="offline-container">
+    <div class="offline-icon">📡</div>
+    <h1>You're Offline</h1>
+    <p>
+      No internet connection detected. Draft Royale needs an active connection 
+      to draft players and track live scores.
+    </p>
+    <button class="btn" onclick="location.reload()">Try Again</button>
+    
+    <div class="status" id="status">
+      Checking connection...
+    </div>
+  </div>
+  
+  <script>
+    // Monitor connection status
+    function updateStatus() {
+      const status = document.getElementById('status');
+      if (navigator.onLine) {
+        status.innerHTML = '<span class="online">✓ Back online!</span> <a href="/" style="color: #ff5722; text-decoration: none;">Return to app →</a>';
+      } else {
+        status.textContent = '✗ No connection detected';
+      }
+    }
+    
+    window.addEventListener('online', updateStatus);
+    window.addEventListener('offline', updateStatus);
+    
+    updateStatus();
+    
+    // Auto-reload when back online
+    window.addEventListener('online', () => {
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 1500);
+    });
+  </script>
+</body>
+</html>

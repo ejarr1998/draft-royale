@@ -635,6 +635,26 @@ socket.on('nextPick', ({ currentPick, currentDrafter, timePerPick }) => {
   if (amIDrafting) notifyMyTurn();
 });
 
+// ⭐ NEW: Handle personalized player pool updates
+socket.on('personalizedPlayerPool', ({ availablePlayers: personalizedPlayers, fullLeagues }) => {
+  // If we receive a personalized pool, use it instead of the full pool
+  if (personalizedPlayers) {
+    availablePlayers = personalizedPlayers;
+    renderPlayerPool();
+    
+    // Optional: Show toast if leagues are full
+    if (fullLeagues) {
+      if (fullLeagues.nba && fullLeagues.nhl) {
+        showToast('Your roster is full!');
+      } else if (fullLeagues.nba) {
+        showToast('NBA roster full - only NHL players shown');
+      } else if (fullLeagues.nhl) {
+        showToast('NHL roster full - only NBA players shown');
+      }
+    }
+  }
+});
+
 let pendingLivePlayers = null;
 
 socket.on('draftComplete', ({ players }) => {

@@ -31,13 +31,13 @@ const SCORING = {
     tripleDouble: 10
   },
   nhl: {
-    goals: 5,
-    assists: 3,
-    shotsOnGoal: 1,
-    blockedShots: 2,
-    saves: 0.5,
-    shutout: 5,
-    hatTrick: 3
+    goals: 9,           // Up from 5 (major impact)
+    assists: 6,         // Up from 3 (major impact)
+    shotsOnGoal: 3,     // Up from 1 (more aggressive play)
+    blockedShots: 5,    // Up from 2 (defensive value)
+    saves: 0.5,         // Same (goalies get many)
+    shutout: 5,         // Same (bonus)
+    hatTrick: 3         // Same (bonus)
   }
 };
 
@@ -1180,9 +1180,57 @@ async function updateLiveScores(lobbyId) {
     hasNHL ? fetchNHLGames(lobby.gameDate) : Promise.resolve([])
   ]);
 
+  // Helper to format game status for display
+  function formatGameStatus(game) {
+    const state = game.state || game.status;
+    const startTime = game.startTime;
+    
+    // Live states
+    if (state && (state.includes('LIVE') || state.includes('Period') || state.includes('Quarter') || 
+        state.includes('Q1') || state.includes('Q2') || state.includes('Q3') || state.includes('Q4') ||
+        state.includes('1st') || state.includes('2nd') || state.includes('3rd') || state.includes('Halftime'))) {
+      return state;
+    }
+    
+    // Final states
+    if (state === 'post' || state === 'OFF' || state === 'FINAL' || state.includes('Final')) {
+      return 'Final';
+    }
+    
+    // Future games - show time
+    if (state === 'pre' || state === 'FUT' || !state) {
+      if (startTime) {
+        const gameTime = new Date(startTime);
+        const now = new Date();
+        const diffHours = (gameTime - now) / (1000 * 60 * 60);
+        
+        // If game is today, show time
+        if (diffHours > -24 && diffHours < 24) {
+          return gameTime.toLocaleTimeString('en-US', { 
+            hour: 'numeric', 
+            minute: '2-digit', 
+            hour12: true,
+            timeZone: 'America/New_York'  // ET for consistency
+          });
+        }
+      }
+      return 'Scheduled';
+    }
+    
+    return state || 'Scheduled';
+  }
+
   const gameStatusMap = {};
-  for (const g of nbaSchedule) gameStatusMap[g.gameId] = g.status || g.state;
-  for (const g of nhlSchedule) gameStatusMap[g.gameId] = g.status || g.state;
+  const gameDataMap = {}; // Store full game data for time info
+  
+  for (const g of nbaSchedule) {
+    gameStatusMap[g.gameId] = formatGameStatus(g);
+    gameDataMap[g.gameId] = g;
+  }
+  for (const g of nhlSchedule) {
+    gameStatusMap[g.gameId] = formatGameStatus(g);
+    gameDataMap[g.gameId] = g;
+  }
   
   for (const player of lobby.players) {
     for (const pick of player.roster || []) {

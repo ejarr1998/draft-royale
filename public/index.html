@@ -983,7 +983,7 @@
     .recap-header { text-align: center; padding: 24px 16px 12px; }
     .recap-title {
       font-family: 'Bebas Neue', sans-serif; font-size: 2rem; letter-spacing: 2px;
-      background: linear-gradient(135deg, var(--accent), var(--nba-orange));
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
       -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     }
     .recap-subtitle { color: var(--text-dim); font-size: 0.85rem; margin-top: 4px; }
@@ -1003,8 +1003,8 @@
       border-left: 3px solid var(--border); background: rgba(255,255,255,0.03);
       font-size: 0.78rem;
     }
-    .recap-pick.nba { border-left-color: var(--nba-orange); }
-    .recap-pick.nhl { border-left-color: var(--nhl-blue); }
+    .recap-pick.nba { border-left-color: var(--nba); }
+    .recap-pick.nhl { border-left-color: var(--nhl); }
     .recap-pick-num { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: var(--text-dim); }
     .recap-pick-name { font-weight: 600; color: var(--text-mid); }
     .recap-footer { padding: 16px; text-align: center; }
@@ -1165,8 +1165,8 @@
         <div style="height: 12px;"></div>
         <button class="btn btn-hero" onclick="createLobby()">CREATE GAME</button>
         <div class="or-divider">or join a room</div>
-        <input class="input" id="joinCode" placeholder="Enter room code" maxlength="6"
-               style="text-transform:uppercase;font-family:'JetBrains Mono',monospace;letter-spacing:4px;text-align:center;margin-bottom:10px;">
+        <input class="input" id="joinCode" placeholder="Room code" maxlength="6"
+               style="text-transform:uppercase;font-family:'JetBrains Mono',monospace;letter-spacing:8px;text-align:center;margin-bottom:10px;font-size:1.2rem;">
         <button class="btn btn-glass" onclick="joinLobby()">Join Game</button>
         <div style="height: 10px;"></div>
         <button class="btn btn-glass" onclick="findPublicGame()">🔍 Find Public Game</button>
@@ -1552,8 +1552,8 @@
           const isUpcoming = g.state === 'pre' || g.state === 'FUT';
           const statusText = isLive ? '● LIVE' : isFinal ? 'FINAL' : time;
           const statusClass = isLive ? 'game-tile-live' : isFinal ? 'game-tile-final' : '';
-          const draftable = isUpcoming ? '<div class="game-tile-draftable">✓ Draftable</div>' : '';
-          return `<div class="game-tile ${!isUpcoming ? 'game-tile-started' : ''}">
+          const draftable = !isFinal ? '<div class="game-tile-draftable">✓ Draftable</div>' : '';
+          return `<div class="game-tile ${isFinal ? 'game-tile-started' : ''}">
             <div class="game-tile-league ${g.league}">${g.league}</div>
             <div class="game-tile-teams">${g.awayTeam} @ ${g.homeTeam}</div>
             <div class="game-tile-time ${statusClass}">${statusText}</div>
@@ -1709,7 +1709,7 @@
     }
 
     function adjustMaxPlayers(delta) {
-      lobbySettings.maxPlayers = Math.min(8, Math.max(2, lobbySettings.maxPlayers + delta));
+      lobbySettings.maxPlayers = Math.min(8, Math.max(1, lobbySettings.maxPlayers + delta));
       document.getElementById('maxPlayersVal').textContent = lobbySettings.maxPlayers;
       emitSettings();
     }

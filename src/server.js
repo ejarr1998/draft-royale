@@ -401,9 +401,12 @@ async function enrichNBAPlayerAverages(players) {
     }
   });
   
-  // Run in batches of 10 to not hammer API
+  // Run in batches of 10 with a delay to avoid rate limits
   for (let i = 0; i < enrichPromises.length; i += 10) {
     await Promise.all(enrichPromises.slice(i, i + 10));
+    if (i + 10 < enrichPromises.length) {
+      await new Promise(r => setTimeout(r, 300)); // 300ms between batches
+    }
   }
 }
 
@@ -446,6 +449,9 @@ async function enrichNHLPlayerAverages(players) {
   
   for (let i = 0; i < enrichPromises.length; i += 10) {
     await Promise.all(enrichPromises.slice(i, i + 10));
+    if (i + 10 < enrichPromises.length) {
+      await new Promise(r => setTimeout(r, 300));
+    }
   }
 }
 
@@ -474,48 +480,107 @@ function assignTierBadges(players) {
   assignTiers(nhlPlayers);
 }
 
+// Game log cache - avoids redundant API calls when opening the same player modal
+const gameLogCache = new Map(); // key: 'league-athleteId' -> { data, timestamp }
+const GAMELOG_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+function getCachedGameLog(league, athleteId) {
+  const key = `${league}-${athleteId}`;
+  const cached = gameLogCache.get(key);
+  if (cached && Date.now() - cached.timestamp < GAMELOG_CACHE_TTL) {
+    return cached.data;
+  }
+  gameLogCache.delete(key);
+  return null;
+}
+
+function setCachedGameLog(league, athleteId, data) {
+  gameLogCache.set(`${league}-${athleteId}`, { data, timestamp: Date.now() });
+  // Prune cache if too large
+  if (gameLogCache.size > 500) {
+    const oldest = gameLogCache.keys().next().value;
+    gameLogCache.delete(oldest);
+  }
+}
+
 // Fetch last 3 game log for a player (called on-demand via API)
 async function fetchNBAGameLog(athleteId) {
+  // Check cache first
+  const cached = getCachedGameLog('nba', athleteId);
+  if (cached) return cached;
+
+  const games = [];
+
+  // Strategy 1: ESPN athlete statistics/splits endpoint
+  // This is more reliable than the gamelog endpoint and includes recent game data
   try {
-    const res = await fetch(`https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/gamelog`);
-    const data = await res.json();
-    
-    const games = [];
-    
-    // The ESPN gamelog API can have different structures depending on season.
-    // Structure 1: data.events = { eventId: { gameDate, opponent, ... } },
-    //              data.categories = [ { type/name, labels, events: [{ eventId, stats }] } ]
-    // Structure 2: data.seasonTypes = [ { categories: [ { events, labels } ] } ]
-    // We need to handle both.
-    
-    let events = data.events || {};
-    let labels = [];
-    let statsByEvent = {};
-    
-    // Try top-level categories first
-    const categories = data.categories || [];
-    for (const cat of categories) {
-      if (cat.events && cat.labels) {
-        labels = cat.labels || [];
-        for (const evt of cat.events || []) {
-          const eid = evt.eventId || evt.id;
-          if (eid) statsByEvent[eid] = evt.stats || [];
+    const res = await fetch(`https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/stats`);
+    if (res.ok) {
+      const data = await res.json();
+
+      // Look for a "gameLog" or recent splits in the response
+      // The stats endpoint sometimes includes splits with recent game data
+      const categories = data.categories || [];
+
+      // Try to find game log data within the stats response
+      for (const cat of categories) {
+        if (cat.type === 'gameLog' || cat.name === 'gameLog') {
+          const labels = cat.labels || [];
+          const events = cat.events || [];
+
+          const ptsIdx = labels.indexOf('PTS');
+          const rebIdx = labels.indexOf('REB');
+          const astIdx = labels.indexOf('AST');
+          const stlIdx = labels.indexOf('STL');
+          const blkIdx = labels.indexOf('BLK');
+          const minIdx = labels.indexOf('MIN');
+
+          const last3 = events.slice(-3).reverse();
+          for (const evt of last3) {
+            const stats = evt.stats || [];
+            games.push({
+              date: evt.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
+              opponent: formatOpponent(evt),
+              stats: {
+                points: parseInt(stats[ptsIdx]) || 0,
+                rebounds: parseInt(stats[rebIdx]) || 0,
+                assists: parseInt(stats[astIdx]) || 0,
+                steals: parseInt(stats[stlIdx]) || 0,
+                blocks: parseInt(stats[blkIdx]) || 0,
+                minutes: stats[minIdx] || '0'
+              }
+            });
+          }
+          if (games.length > 0) break;
         }
       }
     }
-    
-    // If no stats found, try seasonTypes structure
-    if (Object.keys(statsByEvent).length === 0 && data.seasonTypes) {
-      for (const season of data.seasonTypes) {
-        const cats = season.categories || [];
-        for (const cat of cats) {
-          if (cat.events && cat.labels) {
-            labels = cat.labels || [];
-            for (const evt of cat.events || []) {
-              const eid = evt.eventId || evt.id;
-              if (eid) statsByEvent[eid] = evt.stats || [];
-            }
-            // Also collect events metadata from this season
+  } catch (e) {
+    console.log(`NBA stats endpoint failed for ${athleteId}: ${e.message}`);
+  }
+
+  // Strategy 2: ESPN gamelog endpoint (the original approach, with better parsing)
+  if (games.length === 0) {
+    try {
+      const res = await fetch(`https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/${athleteId}/gamelog`);
+      if (res.ok) {
+        const data = await res.json();
+
+        let events = data.events || {};
+        let labels = [];
+        let statsByEvent = {};
+
+        // Collect stats from all possible structures
+        const allCategories = [];
+
+        // Top-level categories
+        if (data.categories) allCategories.push(...data.categories);
+
+        // SeasonTypes nested categories
+        if (data.seasonTypes) {
+          for (const season of data.seasonTypes) {
+            if (season.categories) allCategories.push(...season.categories);
+            // Collect events metadata
             if (season.events) {
               for (const [eid, evtData] of Object.entries(season.events)) {
                 if (!events[eid]) events[eid] = evtData;
@@ -523,98 +588,100 @@ async function fetchNBAGameLog(athleteId) {
             }
           }
         }
-      }
-    }
-    
-    // If still no events metadata, build from available data
-    if (Object.keys(events).length === 0 && data.seasonTypes) {
-      for (const season of data.seasonTypes) {
-        if (season.events) {
-          for (const [eid, evtData] of Object.entries(season.events)) {
-            events[eid] = evtData;
-          }
-        }
-      }
-    }
-    
-    // Get last 3 events that have stats
-    const eventIds = Object.keys(statsByEvent);
-    // Also include event IDs from events object if not already present
-    for (const eid of Object.keys(events)) {
-      if (!eventIds.includes(eid)) eventIds.push(eid);
-    }
-    
-    // Sort by event IDs or date, take last 3 with stats
-    const eventsWithStats = eventIds.filter(eid => statsByEvent[eid] && statsByEvent[eid].length > 0);
-    const last3 = eventsWithStats.slice(-3).reverse();
-    
-    const ptsIdx = labels.indexOf('PTS');
-    const rebIdx = labels.indexOf('REB');
-    const astIdx = labels.indexOf('AST');
-    const stlIdx = labels.indexOf('STL');
-    const blkIdx = labels.indexOf('BLK');
-    const minIdx = labels.indexOf('MIN');
-    
-    for (const evtId of last3) {
-      const evt = events[evtId] || {};
-      const stats = statsByEvent[evtId] || [];
-      
-      let oppStr = '?';
-      if (evt.opponent) {
-        const prefix = evt.atVs || evt.homeAway === 'away' ? '@' : 'vs';
-        oppStr = `${prefix} ${evt.opponent.abbreviation || evt.opponent.displayName || '?'}`;
-      }
-      
-      games.push({
-        date: evt.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
-        opponent: oppStr,
-        stats: {
-          points: parseInt(stats[ptsIdx]) || 0,
-          rebounds: parseInt(stats[rebIdx]) || 0,
-          assists: parseInt(stats[astIdx]) || 0,
-          steals: parseInt(stats[stlIdx]) || 0,
-          blocks: parseInt(stats[blkIdx]) || 0,
-          minutes: stats[minIdx] || '0'
-        }
-      });
-    }
-    
-    // Fallback: if gamelog endpoint returned nothing useful, try the athlete's recent splits
-    if (games.length === 0) {
-      try {
-        const fallbackRes = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/athletes/${athleteId}/eventlog`);
-        const fallbackData = await fallbackRes.json();
-        
-        const recentEvents = (fallbackData.events || []).slice(-3).reverse();
-        for (const evt of recentEvents) {
-          if (evt.stats) {
-            games.push({
-              date: evt.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
-              opponent: evt.opponent?.abbreviation || '?',
-              stats: {
-                points: parseInt(evt.stats.points) || 0,
-                rebounds: parseInt(evt.stats.rebounds) || 0,
-                assists: parseInt(evt.stats.assists) || 0,
-                steals: parseInt(evt.stats.steals) || 0,
-                blocks: parseInt(evt.stats.blocks) || 0,
-                minutes: evt.stats.minutes || '0'
+
+        // Parse categories for stats
+        for (const cat of allCategories) {
+          if (cat.events && cat.labels) {
+            labels = cat.labels;
+            for (const evt of cat.events) {
+              const eid = evt.eventId || evt.id;
+              if (eid && evt.stats && evt.stats.length > 0) {
+                statsByEvent[eid] = evt.stats;
               }
-            });
+            }
           }
         }
-      } catch (fallbackErr) {
-        // silently fail
+
+        // Get last 3 events with stats
+        const eventsWithStats = Object.keys(statsByEvent);
+        const last3 = eventsWithStats.slice(-3).reverse();
+
+        const ptsIdx = labels.indexOf('PTS');
+        const rebIdx = labels.indexOf('REB');
+        const astIdx = labels.indexOf('AST');
+        const stlIdx = labels.indexOf('STL');
+        const blkIdx = labels.indexOf('BLK');
+        const minIdx = labels.indexOf('MIN');
+
+        for (const evtId of last3) {
+          const evt = events[evtId] || {};
+          const stats = statsByEvent[evtId] || [];
+
+          games.push({
+            date: evt.gameDate ? new Date(evt.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '?',
+            opponent: formatOpponent(evt),
+            stats: {
+              points: parseInt(stats[ptsIdx]) || 0,
+              rebounds: parseInt(stats[rebIdx]) || 0,
+              assists: parseInt(stats[astIdx]) || 0,
+              steals: parseInt(stats[stlIdx]) || 0,
+              blocks: parseInt(stats[blkIdx]) || 0,
+              minutes: stats[minIdx] || '0'
+            }
+          });
+        }
       }
+    } catch (e) {
+      console.log(`NBA gamelog endpoint failed for ${athleteId}: ${e.message}`);
     }
-    
-    return games;
-  } catch (e) {
-    console.error(`Error fetching NBA game log for ${athleteId}:`, e.message);
-    return [];
   }
+
+  // Strategy 3: ESPN v2 scoreboard/event summary approach
+  // Uses a different URL pattern that tends to be more stable
+  if (games.length === 0) {
+    try {
+      const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/athletes/${athleteId}`);
+      if (res.ok) {
+        const data = await res.json();
+        // Some athlete pages include recent stats
+        const stats = data.statistics;
+        if (stats && stats.splits) {
+          const lastGames = stats.splits.categories?.find(c => c.name === 'Last 5 Games' || c.name === 'Last 3 Games');
+          if (lastGames && lastGames.stats) {
+            for (const s of lastGames.stats) {
+              games.push({
+                date: '?',
+                opponent: '?',
+                stats: {
+                  points: parseFloat(s.value) || 0,
+                  rebounds: 0, assists: 0, steals: 0, blocks: 0, minutes: '0'
+                }
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // silently fail
+    }
+  }
+
+  setCachedGameLog('nba', athleteId, games);
+  return games;
+}
+
+// Helper to format opponent string from ESPN event data
+function formatOpponent(evt) {
+  if (!evt || !evt.opponent) return '?';
+  const prefix = evt.atVs === '@' || evt.homeAway === 'away' ? '@' : 'vs';
+  return `${prefix} ${evt.opponent.abbreviation || evt.opponent.displayName || '?'}`;
 }
 
 async function fetchNHLGameLog(playerId) {
+  // Check cache first
+  const cached = getCachedGameLog('nhl', playerId);
+  if (cached) return cached;
+
   try {
     const res = await fetch(`https://api-web.nhle.com/v1/player/${playerId}/game-log/now`);
     if (!res.ok) {
@@ -626,7 +693,7 @@ async function fetchNHLGameLog(playerId) {
     const gameLog = data.gameLog || [];
     const last3 = gameLog.slice(0, 3); // NHL API returns most recent first
     
-    return last3.map(g => ({
+    const games = last3.map(g => ({
       date: new Date(g.gameDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
       opponent: `${g.homeRoadFlag === 'H' ? 'vs' : '@'} ${g.opponentAbbrev || '?'}`,
       stats: g.goals !== undefined ? {
@@ -644,6 +711,9 @@ async function fetchNHLGameLog(playerId) {
         toi: g.toi || '0:00'
       }
     }));
+
+    setCachedGameLog('nhl', playerId, games);
+    return games;
   } catch (e) {
     console.error(`Error fetching NHL game log for ${playerId}:`, e.message);
     return [];
@@ -1168,13 +1238,39 @@ io.on('connection', (socket) => {
       nhlPlayers.length > 0 ? enrichNHLPlayerAverages(lobby.availablePlayers) : Promise.resolve()
     ]);
     
+    // Filter NBA players to top 6 per team (by projected score)
+    // This keeps the draft pool focused on meaningful players and reduces API load
+    const NBA_PLAYERS_PER_TEAM = 6;
+    const nbaByTeamGame = {};
+    const nonNba = [];
+    for (const p of lobby.availablePlayers) {
+      if (p.league === 'nba') {
+        const key = `${p.team}-${p.gameId}`;
+        if (!nbaByTeamGame[key]) nbaByTeamGame[key] = [];
+        nbaByTeamGame[key].push(p);
+      } else {
+        nonNba.push(p);
+      }
+    }
+    const filteredNba = [];
+    for (const players of Object.values(nbaByTeamGame)) {
+      players.sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
+      filteredNba.push(...players.slice(0, NBA_PLAYERS_PER_TEAM));
+    }
+    lobby.availablePlayers = [...filteredNba, ...nonNba];
+    
+    const trimmedCount = nbaPlayers.length - filteredNba.length;
+    if (trimmedCount > 0) {
+      console.log(`Trimmed ${trimmedCount} low-value NBA players (kept top ${NBA_PLAYERS_PER_TEAM}/team)`);
+    }
+    
     // Assign tier badges based on projected score
     assignTierBadges(lobby.availablePlayers);
     
     // Sort by projected score descending (best players first)
     lobby.availablePlayers.sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
     
-    console.log(`Draft pool ready: ${upcomingNBA.length} NBA (${nbaPlayers.length} players), ${upcomingNHL.length} NHL (${nhlPlayers.length} players) | Settings: ${draftType} draft, ${timePerPick}s/pick, leagues=${leagues}, slots=${JSON.stringify(lobby.settings.rosterSlots)}`);
+    console.log(`Draft pool ready: ${upcomingNBA.length} NBA games (${filteredNba.length} players), ${upcomingNHL.length} NHL games (${nonNba.length} players) | Settings: ${draftType} draft, ${timePerPick}s/pick, leagues=${leagues}, slots=${JSON.stringify(lobby.settings.rosterSlots)}`);
     
     // Randomize player order then generate draft order
     const rosterSize = getRosterSize(lobby.settings);
@@ -1473,7 +1569,7 @@ app.get('/api/scoring', (req, res) => {
   res.json(SCORING);
 });
 
-// Get player game log (last 3 games)
+// Get player game log (last 3 games) — with caching
 app.get('/api/gamelog/:league/:athleteId', async (req, res) => {
   const { league, athleteId } = req.params;
   try {
@@ -1487,6 +1583,7 @@ app.get('/api/gamelog/:league/:athleteId', async (req, res) => {
     }
     res.json({ games, league });
   } catch (e) {
+    console.error(`Game log error for ${league}/${athleteId}:`, e.message);
     res.status(500).json({ error: 'Failed to fetch game log' });
   }
 });

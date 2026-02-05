@@ -56,7 +56,7 @@ function createLobby(hostName, maxPlayers, isPublic, settings = {}) {
     id: lobbyId,
     host: null, // set when host connects via socket
     hostName,
-    maxPlayers: Math.min(Math.max(maxPlayers, 2), 8),
+    maxPlayers: Math.min(Math.max(maxPlayers, 1), 8),
     isPublic,
     state: 'waiting', // waiting -> drafting -> live -> finished
     players: [],
@@ -144,6 +144,10 @@ async function fetchNHLGames(targetDate) {
     const d = targetDate ? new Date(targetDate) : new Date();
     const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const response = await fetch(`https://api-web.nhle.com/v1/schedule/${dateStr}`);
+    if (!response.ok) {
+      console.error(`NHL schedule API returned ${response.status} for ${dateStr}`);
+      return [];
+    }
     const data = await response.json();
     
     const games = [];
@@ -238,38 +242,50 @@ async function fetchNHLPlayersForGames(games) {
   
   for (const game of games) {
     try {
-      const response = await fetch(`https://api-web.nhle.com/v1/gamecenter/${game.gameId}/roster`);
-      const data = await response.json();
+      // Use team roster endpoints instead of gamecenter (which doesn't have a roster path)
+      // Fetch rosters for both teams in the game
+      const teams = [
+        { abbrev: game.homeTeam, name: game.homeName },
+        { abbrev: game.awayTeam, name: game.awayName }
+      ];
       
-      for (const side of ['homeTeam', 'awayTeam']) {
-        const teamAbbrev = side === 'homeTeam' ? game.homeTeam : game.awayTeam;
-        const teamName = side === 'homeTeam' ? game.homeName : game.awayName;
-        
-        for (const posGroup of ['forwards', 'defensemen', 'goalies']) {
-          for (const player of (data[side]?.[posGroup] || [])) {
-            const position = posGroup === 'forwards' ? player.positionCode || 'F' :
-                            posGroup === 'defensemen' ? 'D' : 'G';
-            const isGoalie = posGroup === 'goalies';
-            
-            players.push({
-              id: `nhl-${player.id}`,
-              athleteId: player.id,
-              name: `${player.firstName?.default || ''} ${player.lastName?.default || ''}`.trim(),
-              team: teamAbbrev,
-              teamName: teamName?.trim(),
-              league: 'nhl',
-              position: position,
-              gameId: game.gameId,
-              headshot: player.headshot || null,
-              stats: isGoalie ? 
-                { saves: 0, goalsAgainst: 0 } :
-                { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
-              fantasyScore: 0,
-              isGoalie: isGoalie,
-              seasonAvg: isGoalie ? { saves: 0, goalsAgainst: 0 } : { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
-              projectedScore: 0
-            });
+      for (const team of teams) {
+        try {
+          const response = await fetch(`https://api-web.nhle.com/v1/roster/${team.abbrev}/current`);
+          if (!response.ok) {
+            console.error(`NHL roster API returned ${response.status} for ${team.abbrev}`);
+            continue;
           }
+          const data = await response.json();
+          
+          for (const posGroup of ['forwards', 'defensemen', 'goalies']) {
+            for (const player of (data[posGroup] || [])) {
+              const position = posGroup === 'forwards' ? player.positionCode || 'F' :
+                              posGroup === 'defensemen' ? 'D' : 'G';
+              const isGoalie = posGroup === 'goalies';
+              
+              players.push({
+                id: `nhl-${player.id}`,
+                athleteId: player.id,
+                name: `${player.firstName?.default || ''} ${player.lastName?.default || ''}`.trim(),
+                team: team.abbrev,
+                teamName: team.name?.trim(),
+                league: 'nhl',
+                position: position,
+                gameId: game.gameId,
+                headshot: player.headshot || null,
+                stats: isGoalie ? 
+                  { saves: 0, goalsAgainst: 0 } :
+                  { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
+                fantasyScore: 0,
+                isGoalie: isGoalie,
+                seasonAvg: isGoalie ? { saves: 0, goalsAgainst: 0 } : { goals: 0, assists: 0, shotsOnGoal: 0, blockedShots: 0 },
+                projectedScore: 0
+              });
+            }
+          }
+        } catch (teamErr) {
+          console.error(`Error fetching roster for ${team.abbrev}:`, teamErr.message);
         }
       }
     } catch (err) {
@@ -342,6 +358,7 @@ async function enrichNHLPlayerAverages(players) {
   const enrichPromises = nhlPlayers.map(async (player) => {
     try {
       const res = await fetch(`https://api-web.nhle.com/v1/player/${player.athleteId}/landing`);
+      if (!res.ok) return; // skip if API returns error
       const data = await res.json();
       
       // Get current season stats from featuredStats
@@ -462,6 +479,10 @@ async function fetchNBAGameLog(athleteId) {
 async function fetchNHLGameLog(playerId) {
   try {
     const res = await fetch(`https://api-web.nhle.com/v1/player/${playerId}/game-log/now`);
+    if (!res.ok) {
+      console.error(`NHL game log API returned ${res.status} for player ${playerId}`);
+      return [];
+    }
     const data = await res.json();
     
     const gameLog = data.gameLog || [];
@@ -535,6 +556,10 @@ async function fetchLiveNBAStats(gameId) {
 async function fetchLiveNHLStats(gameId) {
   try {
     const response = await fetch(`https://api-web.nhle.com/v1/gamecenter/${gameId}/boxscore`);
+    if (!response.ok) {
+      console.error(`NHL boxscore API returned ${response.status} for game ${gameId}`);
+      return {};
+    }
     const data = await response.json();
     
     const playerStats = {};
@@ -784,7 +809,7 @@ io.on('connection', (socket) => {
     if (!lobby || socket.sessionId !== lobby.host || lobby.state !== 'waiting') return;
     
     if (settings.maxPlayers !== undefined) {
-      lobby.maxPlayers = Math.min(Math.max(settings.maxPlayers, 2), 8);
+      lobby.maxPlayers = Math.min(Math.max(settings.maxPlayers, 1), 8);
     }
     if (settings.isPublic !== undefined) {
       lobby.isPublic = settings.isPublic;
@@ -945,8 +970,8 @@ io.on('connection', (socket) => {
     const lobby = lobbies[socket.lobbyId];
     if (!lobby) return;
     if (socket.sessionId !== lobby.host) return;
-    if (lobby.players.length < 2) {
-      return socket.emit('error', { message: 'Need at least 2 players' });
+    if (lobby.players.length < 1) {
+      return socket.emit('error', { message: 'Need at least 1 player' });
     }
     
     lobby.state = 'drafting';
@@ -961,10 +986,11 @@ io.on('connection', (socket) => {
       fetchNHL ? fetchNHLGames(gameDate) : Promise.resolve([])
     ]);
     
-    // For future dates, all games are draftable. For today, only upcoming ones.
+    // For future dates, all games are draftable.
+    // For today, allow upcoming AND in-progress games (exclude only finished).
     const isFutureDate = gameDate && new Date(gameDate).toDateString() !== new Date().toDateString();
-    const upcomingNBA = isFutureDate ? nbaGames : nbaGames.filter(g => g.state === 'pre');
-    const upcomingNHL = isFutureDate ? nhlGames : nhlGames.filter(g => g.state === 'FUT');
+    const upcomingNBA = isFutureDate ? nbaGames : nbaGames.filter(g => g.state !== 'post');
+    const upcomingNHL = isFutureDate ? nhlGames : nhlGames.filter(g => g.state !== 'OFF' && g.state !== 'FINAL');
     
     // Store ALL games for live scoring later
     lobby.games = [...nbaGames, ...nhlGames];

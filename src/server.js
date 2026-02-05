@@ -122,17 +122,23 @@ async function fetchNBAGames(targetDate) {
     const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${dateStr}`);
     const data = await response.json();
     
-    return (data.events || []).map(event => ({
-      gameId: event.id,
-      league: 'nba',
-      homeTeam: event.competitions[0].competitors.find(c => c.homeAway === 'home')?.team?.abbreviation,
-      awayTeam: event.competitions[0].competitors.find(c => c.homeAway === 'away')?.team?.abbreviation,
-      homeName: event.competitions[0].competitors.find(c => c.homeAway === 'home')?.team?.displayName,
-      awayName: event.competitions[0].competitors.find(c => c.homeAway === 'away')?.team?.displayName,
-      startTime: new Date(event.date),
-      state: event.status?.type?.state,
-      status: event.status?.type?.shortDetail
-    }));
+    return (data.events || []).map(event => {
+      const home = event.competitions[0].competitors.find(c => c.homeAway === 'home');
+      const away = event.competitions[0].competitors.find(c => c.homeAway === 'away');
+      return {
+        gameId: event.id,
+        league: 'nba',
+        homeTeam: home?.team?.abbreviation,
+        awayTeam: away?.team?.abbreviation,
+        homeTeamId: home?.team?.id,
+        awayTeamId: away?.team?.id,
+        homeName: home?.team?.displayName,
+        awayName: away?.team?.displayName,
+        startTime: new Date(event.date),
+        state: event.status?.type?.state,
+        status: event.status?.type?.shortDetail
+      };
+    });
   } catch (err) {
     console.error('Error fetching NBA games:', err);
     return [];
@@ -179,58 +185,82 @@ async function fetchNBAPlayersForGames(games) {
   const players = [];
   
   for (const game of games) {
-    try {
-      const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${game.gameId}`);
-      const data = await response.json();
-      
-      for (const roster of data.rosters || []) {
-        const teamAbbrev = roster.team?.abbreviation;
-        const teamName = roster.team?.displayName;
+    // Build list of teams in this game
+    const teams = [
+      { id: game.homeTeamId, abbrev: game.homeTeam, name: game.homeName },
+      { id: game.awayTeamId, abbrev: game.awayTeam, name: game.awayName }
+    ];
+    
+    let gotPlayers = false;
+    
+    // Primary approach: fetch team rosters via ESPN team roster endpoint
+    // This works reliably for pre-game, in-progress, and completed games
+    for (const team of teams) {
+      if (!team.id) continue;
+      try {
+        const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${team.id}/roster`);
+        const data = await response.json();
         
-        for (const entry of roster.roster || []) {
-          const athlete = entry.athlete || entry;
+        for (const athlete of data.athletes || []) {
           if (athlete.displayName) {
-            // Try to extract season averages from the athlete stats if available
-            let avgPts = 0, avgReb = 0, avgAst = 0, avgStl = 0, avgBlk = 0;
-            
-            // ESPN summary sometimes includes season stats in athlete.statistics
-            const seasonStats = athlete.statistics || [];
-            for (const statLine of seasonStats) {
-              if (statLine.type === 'total' || statLine.displayName === 'averages') {
-                const labels = statLine.labels || statLine.names || [];
-                const vals = statLine.stats || statLine.values || [];
-                const idx = (name) => labels.indexOf(name);
-                avgPts = parseFloat(vals[idx('PTS')]) || 0;
-                avgReb = parseFloat(vals[idx('REB')]) || 0;
-                avgAst = parseFloat(vals[idx('AST')]) || 0;
-                avgStl = parseFloat(vals[idx('STL')]) || 0;
-                avgBlk = parseFloat(vals[idx('BLK')]) || 0;
-              }
-            }
-
-            const projScore = (avgPts * SCORING.nba.points) + (avgReb * SCORING.nba.rebounds) +
-              (avgAst * SCORING.nba.assists) + (avgStl * SCORING.nba.steals) + (avgBlk * SCORING.nba.blocks);
-
             players.push({
               id: `nba-${athlete.id}`,
               athleteId: athlete.id,
               name: athlete.displayName,
-              team: teamAbbrev,
-              teamName: teamName,
+              team: team.abbrev,
+              teamName: team.name,
               league: 'nba',
               position: athlete.position?.abbreviation || 'N/A',
               gameId: game.gameId,
               headshot: athlete.headshot?.href || null,
               stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
               fantasyScore: 0,
-              seasonAvg: { points: avgPts, rebounds: avgReb, assists: avgAst, steals: avgStl, blocks: avgBlk },
-              projectedScore: Math.round(projScore * 10) / 10
+              seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
+              projectedScore: 0
             });
+            gotPlayers = true;
           }
         }
+      } catch (teamErr) {
+        console.error(`Error fetching NBA roster for team ${team.abbrev} (${team.id}):`, teamErr.message);
       }
-    } catch (err) {
-      console.error(`Error fetching NBA players for game ${game.gameId}:`, err);
+    }
+    
+    // Fallback: if team roster endpoint didn't work, try summary endpoint
+    // (works for in-progress/completed games that have rosters populated)
+    if (!gotPlayers) {
+      try {
+        const response = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=${game.gameId}`);
+        const data = await response.json();
+        
+        for (const roster of data.rosters || []) {
+          const teamAbbrev = roster.team?.abbreviation;
+          const teamName = roster.team?.displayName;
+          
+          for (const entry of roster.roster || []) {
+            const athlete = entry.athlete || entry;
+            if (athlete.displayName) {
+              players.push({
+                id: `nba-${athlete.id}`,
+                athleteId: athlete.id,
+                name: athlete.displayName,
+                team: teamAbbrev,
+                teamName: teamName,
+                league: 'nba',
+                position: athlete.position?.abbreviation || 'N/A',
+                gameId: game.gameId,
+                headshot: athlete.headshot?.href || null,
+                stats: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
+                fantasyScore: 0,
+                seasonAvg: { points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0 },
+                projectedScore: 0
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`Error fetching NBA summary fallback for game ${game.gameId}:`, err);
+      }
     }
   }
   

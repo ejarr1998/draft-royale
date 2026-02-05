@@ -1428,10 +1428,10 @@
           <div class="search-row">
             <input class="search-input" id="playerSearch" placeholder="Search player or team..." oninput="filterPlayers()">
           </div>
-          <div class="filter-row">
-            <button class="filter-chip active" data-filter="all" onclick="setFilter('all',this)">All</button>
-            <button class="filter-chip" data-filter="nba" onclick="setFilter('nba',this)">🏀 NBA</button>
-            <button class="filter-chip" data-filter="nhl" onclick="setFilter('nhl',this)">🏒 NHL</button>
+          <div class="filter-row" id="leagueFilterRow">
+            <button class="filter-chip active" data-filter="all" id="filterAll" onclick="setFilter('all',this)">All</button>
+            <button class="filter-chip" data-filter="nba" id="filterNba" onclick="setFilter('nba',this)">🏀 NBA</button>
+            <button class="filter-chip" data-filter="nhl" id="filterNhl" onclick="setFilter('nhl',this)">🏒 NHL</button>
           </div>
           <div class="filter-row" id="positionFilters">
             <button class="filter-chip active-pos" data-pos="all" onclick="setPosFilter('all',this)">All Pos</button>
@@ -1661,6 +1661,7 @@
         draftOrderList = data.draftOrder;
         draftGames = data.games || []; currentGameFilter = 'all';
         amIDrafting = data.currentDrafter === mySessionId;
+        updateLeagueFilterVisibility();
         buildPositionFilters(data.availablePlayers);
         renderDraftGamesBar();
         renderDraftRosters(data.lobby.players, data.currentDrafter);
@@ -2072,6 +2073,7 @@
       draftGames = games || []; currentGameFilter = 'all';
       updateActiveGamePhase('drafting');
       showScreen('draftScreen');
+      updateLeagueFilterVisibility();
       buildPositionFilters(players);
       renderDraftGamesBar();
       renderDraftRosters(lobby.players, currentDrafter);
@@ -2219,16 +2221,26 @@
       if (!draftGames.length) { bar.style.display = 'none'; return; }
       bar.style.display = 'block';
 
-      // Count available players per game
+      // Filter games by current league filter
+      const filteredGames = currentFilter === 'all' ? draftGames : draftGames.filter(g => g.league === currentFilter);
+
+      // Count available players per game (also respecting league filter)
       const countByGame = {};
-      for (const p of availablePlayers) {
+      let countedPlayers = availablePlayers;
+      if (currentFilter !== 'all') countedPlayers = countedPlayers.filter(p => p.league === currentFilter);
+      for (const p of countedPlayers) {
         countByGame[p.gameId] = (countByGame[p.gameId] || 0) + 1;
       }
 
-      const totalPlayers = availablePlayers.length;
+      const totalPlayers = countedPlayers.length;
       const isAllActive = currentGameFilter === 'all';
 
-      let html = `<div class="draft-game-chip chip-all ${isAllActive ? 'chip-active' : ''}" onclick="setGameFilter('all')">
+      // If the currently selected game filter is no longer visible, reset to 'all'
+      if (currentGameFilter !== 'all' && !filteredGames.some(g => g.gameId === currentGameFilter)) {
+        currentGameFilter = 'all';
+      }
+
+      let html = `<div class="draft-game-chip chip-all ${currentGameFilter === 'all' ? 'chip-active' : ''}" onclick="setGameFilter('all')">
         <div class="dgc-info">
           <div class="dgc-matchup">All Games</div>
           <div class="dgc-count">${totalPlayers} players</div>
@@ -2236,7 +2248,7 @@
       </div>`;
 
       // Sort: draftable games first (pre/FUT/in/LIVE), then final; within groups sort by start time
-      const sorted = [...draftGames].sort((a, b) => {
+      const sorted = [...filteredGames].sort((a, b) => {
         const aFinal = a.state === 'post' || a.state === 'OFF' || a.state === 'FINAL';
         const bFinal = b.state === 'post' || b.state === 'OFF' || b.state === 'FINAL';
         if (aFinal !== bFinal) return aFinal ? 1 : -1;
@@ -2539,16 +2551,38 @@
       log.prepend(e);
     }
 
+    function updateLeagueFilterVisibility() {
+      const leagues = lobbyState?.settings?.leagues || 'both';
+      const filterRow = document.getElementById('leagueFilterRow');
+      const filterAll = document.getElementById('filterAll');
+      const filterNba = document.getElementById('filterNba');
+      const filterNhl = document.getElementById('filterNhl');
+      if (!filterRow) return;
+      if (leagues === 'nba') {
+        // NBA only - hide the filter row entirely since there's only one league
+        filterRow.style.display = 'none';
+        currentFilter = 'all'; // reset to show all (which is only NBA)
+      } else if (leagues === 'nhl') {
+        // NHL only - hide the filter row entirely
+        filterRow.style.display = 'none';
+        currentFilter = 'all';
+      } else {
+        // Both - show all filters
+        filterRow.style.display = 'flex';
+      }
+    }
+
     function setFilter(filter, btn) {
       currentFilter = filter;
       currentPosFilter = 'all'; // reset pos when switching league
-      document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active','active-nhl'));
+      document.querySelectorAll('#draftPool .filter-chip').forEach(b => b.classList.remove('active','active-nhl'));
       btn.classList.add(filter === 'nhl' ? 'active-nhl' : 'active');
       // Rebuild position filters for visible players
       let visible = availablePlayers;
       if (currentGameFilter !== 'all') visible = visible.filter(p => p.gameId === currentGameFilter);
       if (filter !== 'all') visible = visible.filter(p => p.league === filter);
       buildPositionFilters(visible);
+      renderDraftGamesBar(); // re-render games bar to reflect league filter
       filterPlayers();
     }
     function filterPlayers() { renderPlayerPool(); }

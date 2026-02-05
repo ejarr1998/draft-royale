@@ -762,15 +762,16 @@ body {
 /* Player Details (Expanded) */
 .player-details {
   background: var(--bg);
-  padding: 16px;
+  padding: 0 16px;
   border-top: 1px solid var(--border);
   max-height: 0;
   overflow: hidden;
-  transition: max-height 0.3s;
+  transition: max-height 0.3s ease, padding 0.3s ease;
 }
 
 .player-details.visible {
   max-height: 400px;
+  padding: 16px;
 }
 
 .stat-grid {
@@ -878,6 +879,52 @@ body {
 .winner-subtitle {
   font-size: 0.875rem;
   opacity: 0.9;
+}
+
+/* Mobile H2H Optimization */
+@media (max-width: 767px) {
+  .h2h-scoreboard {
+    gap: 8px;
+    padding: 0 4px;
+  }
+  
+  .h2h-team {
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+  }
+  
+  .h2h-avatar {
+    width: 44px;
+    height: 44px;
+    font-size: 1.125rem;
+  }
+  
+  .h2h-info {
+    flex: 1;
+    min-width: 0;
+  }
+  
+  .h2h-name {
+    font-size: 0.75rem;
+  }
+  
+  .h2h-score {
+    font-size: 1.5rem;
+  }
+  
+  .h2h-vs {
+    flex-shrink: 0;
+  }
+  
+  .h2h-vs-text {
+    font-size: 0.75rem;
+  }
+  
+  .h2h-diff {
+    font-size: 0.75rem;
+    padding: 4px 8px;
+  }
 }
 
 /* Desktop Layout */

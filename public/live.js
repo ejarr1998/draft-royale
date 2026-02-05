@@ -12,29 +12,53 @@ const avatarClasses = ['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4', 'avatar-5
 
 // Initialize
 socket.on('connect', () => {
+  console.log('🔌 Socket connected');
   const urlParams = new URLSearchParams(window.location.search);
   const lobbyId = urlParams.get('lobby');
+  console.log('📋 URL params:', { lobbyId, mySessionId });
+  
   if (lobbyId && mySessionId) {
     myLobbyId = lobbyId;
+    console.log('📤 Sending rejoin request...');
     socket.emit('rejoin', { sessionId: mySessionId });
+  } else {
+    console.error('❌ Missing lobbyId or sessionId');
   }
 });
 
 socket.on('rejoinState', (data) => {
+  console.log('📥 Received rejoinState:', {
+    phase: data.phase,
+    lobbyId: data.lobby?.id,
+    playerCount: data.players?.length
+  });
+  
   if (data.phase === 'live' || data.phase === 'finished') {
     myLobbyId = data.lobby.id;
     gameState = data;
+    console.log('✅ Set gameState, rendering live screen');
     renderLiveScreen(data.players, data.phase);
   } else {
+    console.warn('❌ Not in live/finished phase, redirecting home');
     window.location.href = '/';
   }
 });
 
 socket.on('scoreUpdate', ({ players, state }) => {
+  console.log('📊 Received scoreUpdate:', {
+    playerCount: players.length,
+    state,
+    hasGameState: !!gameState,
+    scores: players.map(p => ({ name: p.name, score: p.totalScore }))
+  });
+  
   if (gameState) {
     gameState.players = players;
     gameState.phase = state;
     renderLiveScreen(players, state);
+    console.log('✅ Updated live screen');
+  } else {
+    console.warn('❌ No gameState - cannot update screen');
   }
 });
 

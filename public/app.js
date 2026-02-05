@@ -107,6 +107,7 @@ socket.on('connect', () => {
   renderActiveGameBanner();
 });
 
+// Basic functions that are called
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -114,8 +115,17 @@ function showScreen(id) {
 }
 function goHome() {
   showScreen('homeScreen');
-  // Don't destroy the session — just navigate back so user can rejoin
   renderActiveGameBanner();
+}
+function leaveGame() {
+  if (!confirm('Leave this game permanently? You won\'t be able to rejoin.')) return;
+  clearActiveGame();
+  mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
+  localStorage.setItem('dr_sessionId', mySessionId);
+  myLobbyId = null; isHost = false;
+  showScreen('homeScreen');
+  renderActiveGameBanner();
+  showToast('Left the game');
 }
 
 function showToast(msg, isError) {
@@ -141,7 +151,6 @@ async function loadGamesForDate(dateStr) {
       const time = new Date(g.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       const isLive = g.state === 'in' || g.state === 'LIVE';
       const isFinal = g.state === 'post' || g.state === 'OFF' || g.state === 'FINAL';
-      const isUpcoming = g.state === 'pre' || g.state === 'FUT';
       const statusText = isLive ? '● LIVE' : isFinal ? 'FINAL' : time;
       const statusClass = isLive ? 'game-tile-live' : isFinal ? 'game-tile-final' : '';
       const draftable = !isFinal ? '<div class="game-tile-draftable">✓ Draftable</div>' : '';
@@ -155,32 +164,12 @@ async function loadGamesForDate(dateStr) {
   } catch(e) { console.error(e); }
 }
 
-// Init home screen
-buildHomeDatePicker();
-loadGamesForDate(null);
-renderActiveGameBanner();
-// Restore player name from previous session
-const savedName = localStorage.getItem('dr_playerName');
-if (savedName) document.getElementById('playerName').value = savedName;
-
-// Lobby settings state
-let lobbySettings = {
-  draftType: 'snake',
-  timePerPick: 30,
-  rosterSlots: { nba: 4, nhl: 2 },
-  leagues: 'both',
-  maxPlayers: 2,
-  isPublic: false,
-  gameDate: null // null = today
-};
-
 // Date helpers
 function getDateOptions() {
   const options = [];
   for (let i = 0; i < 4; i++) {
     const d = new Date();
     d.setDate(d.getDate() + i);
-    // Use local date components to avoid UTC timezone shift
     const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     let label;
     if (i === 0) label = 'Today';
@@ -192,11 +181,10 @@ function getDateOptions() {
   return options;
 }
 
-let selectedHomeDate = null; // null = today
-
 function buildHomeDatePicker() {
   const opts = getDateOptions();
   const row = document.getElementById('datePickerRow');
+  if (!row) return; // Element might not exist yet
   row.innerHTML = opts.map((o, i) => `
     <button class="date-chip ${i === 0 ? 'date-active' : ''}" data-date="${o.iso}" onclick="selectHomeDate('${o.iso}', this)">
       <span class="date-day">${o.dayLabel}</span>
@@ -206,7 +194,6 @@ function buildHomeDatePicker() {
 }
 
 function selectHomeDate(iso, btn) {
-  selectedHomeDate = iso;
   document.querySelectorAll('.date-chip').forEach(b => b.classList.remove('date-active'));
   btn.classList.add('date-active');
   loadGamesForDate(iso);
@@ -218,10 +205,16 @@ function createLobby() {
   localStorage.setItem('dr_playerName', myName);
   socket.emit('createLobby', {
     playerName: myName,
-    maxPlayers: lobbySettings.maxPlayers,
-    isPublic: lobbySettings.isPublic,
+    maxPlayers: 2,
+    isPublic: false,
     sessionId: mySessionId,
-    settings: lobbySettings
+    settings: { 
+      draftType: 'snake', 
+      timePerPick: 30, 
+      leagues: 'both', 
+      rosterSlots: { nba: 4, nhl: 2 }, 
+      gameDate: null 
+    }
   });
 }
 
@@ -234,16 +227,95 @@ function joinLobby() {
   socket.emit('joinLobby', { lobbyId: code, playerName: myName, sessionId: mySessionId });
 }
 
-// Simplified basic app structure focusing on caching setup
+function findPublicGame() {
+  myName = document.getElementById('playerName').value.trim();
+  if (!myName) return showToast('Enter your name!', true);
+  socket.emit('findPublicLobby', { playerName: myName });
+}
 
-// Socket event handlers - simplified
+function copyLobbyCode() { 
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(myLobbyId).then(() => showToast('Code copied!')); 
+  } else {
+    showToast('Copy not supported on this device', true);
+  }
+}
+
+function shareLobby() {
+  const url = `${window.location.origin}?join=${myLobbyId}`;
+  if (navigator.share) {
+    navigator.share({ title: 'Join my Draft Royale lobby!', text: `Room code: ${myLobbyId}`, url }).catch(()=>{});
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).then(() => showToast('Link copied!'));
+  } else {
+    showToast('Share not supported on this device', true);
+  }
+}
+
+// Basic socket event handlers
 socket.on('lobbyCreated', ({ lobbyId, lobby }) => {
   myLobbyId = lobbyId; 
   isHost = true; 
+  saveActiveGame(lobbyId, 'waiting', myName);
+  showScreen('lobbyScreen');
+  const codeEl = document.getElementById('lobbyCode');
+  if (codeEl) codeEl.textContent = lobbyId;
   showToast('Lobby created!');
+});
+
+socket.on('lobbyUpdate', (lobby) => {
+  // Basic lobby update handling
+  if (!myLobbyId) {
+    myLobbyId = lobby.id;
+    showScreen('lobbyScreen');
+    const codeEl = document.getElementById('lobbyCode');
+    if (codeEl) codeEl.textContent = lobby.id;
+    myName = lobby.players.find(p => p.id === mySessionId)?.name || myName;
+  }
+  saveActiveGame(lobby.id, lobby.state || 'waiting', myName);
+});
+
+socket.on('rejoinState', (data) => {
+  mySessionId = data.sessionId;
+  isHost = data.isHost;
+  myLobbyId = data.lobby.id;
+  myName = data.lobby.players.find(p => p.id === mySessionId)?.name || myName;
+  saveActiveGame(myLobbyId, data.phase, myName);
+  
+  if (data.phase === 'waiting') {
+    showScreen('lobbyScreen');
+    const codeEl = document.getElementById('lobbyCode');
+    if (codeEl) codeEl.textContent = data.lobby.id;
+  }
+  showToast('Reconnected!');
+});
+
+socket.on('rejoinFailed', () => {
+  clearActiveGame();
+  renderActiveGameBanner();
+});
+
+socket.on('publicLobbyFound', ({ lobbyId }) => { 
+  socket.emit('joinLobby', { lobbyId, playerName: myName, sessionId: mySessionId }); 
 });
 
 socket.on('error', ({ message }) => {
   showToast(message, true);
 });
 
+// Initialize when DOM is ready
+function initApp() {
+  buildHomeDatePicker();
+  loadGamesForDate(null);
+  renderActiveGameBanner();
+  const savedName = localStorage.getItem('dr_playerName');
+  const nameInput = document.getElementById('playerName');
+  if (savedName && nameInput) nameInput.value = savedName;
+}
+
+// Run init when DOM is loaded
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}

@@ -42,33 +42,23 @@ const SCORING = {
 };
 
 // ============================================
-// GLOBAL CACHES  (disk-backed for restart survival)
+// ENHANCED CACHING SYSTEM
 // ============================================
-//
-// Strategy: the slow-to-build caches (player season stats, rosters) are
-// written to a JSON file every few minutes and reloaded on startup.
-// Fast-changing caches (boxscores, schedules) are NOT persisted — they'd
-// be stale after a restart anyway.
-//
-// On Railway, the filesystem survives process restarts within the same
-// deployment.  For persistence across *deploys*, mount a Railway Volume
-// at the CACHE_DIR path.
-
 const CACHE_DIR = process.env.CACHE_DIR || path.join(__dirname, '..', '.cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'player-cache.json');
 const CACHE_PERSIST_INTERVAL = 3 * 60 * 1000; // write to disk every 3 min
-const CACHE_PERSIST_VERSION = 2; // bump if cache schema changes
+const CACHE_PERSIST_VERSION = 3; // bumped for new cache structure
 
 // --- Persistent caches (survive restart) ---
-// NHL player stats cache — avoids re-fetching landing pages during enrichment
+// NHL player stats cache
 const nhlPlayerStatsCache = new Map();
-const NHL_STATS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours — season avgs barely change intraday
+const NHL_STATS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
 
 // NBA player stats cache
 const nbaPlayerStatsCache = new Map();
 const NBA_STATS_CACHE_TTL = 4 * 60 * 60 * 1000;
 
-// NHL roster cache — team rosters don't change during a session
+// NHL roster cache
 const nhlRosterCache = new Map();
 const NHL_ROSTER_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -76,16 +66,22 @@ const NHL_ROSTER_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
 const nbaRosterCache = new Map();
 const NBA_ROSTER_CACHE_TTL = 6 * 60 * 60 * 1000;
 
-// Game log cache — avoids redundant API calls when opening the same player modal
+// Game log cache
 const gameLogCache = new Map();
 const GAMELOG_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
+// ⭐ ENRICHED PLAYER POOL CACHE — THE KEY OPTIMIZATION ⭐
+// Stores fully enriched player pools by date+league, so multiple drafts reuse the same data
+// Cache key format: "YYYY-MM-DD:league" (e.g., "2026-02-05:both", "2026-02-05:nba")
+const enrichedPoolCache = new Map();
+const ENRICHED_POOL_TTL = 6 * 60 * 60 * 1000; // 6 hours — enriched pools stay fresh for the day
+
 // --- Ephemeral caches (NOT persisted — too short-lived) ---
-// Schedule cache — avoids re-fetching the same day's schedule
+// Schedule cache
 const scheduleCache = new Map();
 const SCHEDULE_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 
-// Live boxscore cache — avoids hammering APIs during score updates
+// Live boxscore cache
 const boxscoreCache = new Map();
 const BOXSCORE_CACHE_TTL = 25 * 1000; // 25 seconds
 
@@ -96,6 +92,7 @@ const PERSISTENT_CACHES = {
   nhlRoster:       { cache: nhlRosterCache,      ttl: NHL_ROSTER_CACHE_TTL },
   nbaRoster:       { cache: nbaRosterCache,      ttl: NBA_ROSTER_CACHE_TTL },
   gameLog:         { cache: gameLogCache,         ttl: GAMELOG_CACHE_TTL },
+  enrichedPool:    { cache: enrichedPoolCache,    ttl: ENRICHED_POOL_TTL },  // ⭐ NEW
 };
 
 // ============================================
@@ -116,8 +113,19 @@ function setCache(cache, key, data, maxSize = 1000) {
   }
 }
 
+// ⭐ Generate cache key for enriched player pools
+function getEnrichedPoolKey(dateStr, leagues) {
+  const date = dateStr || getTodayISO();
+  return `${date}:${leagues || 'both'}`;
+}
+
+function getTodayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
 // ============================================
-// DISK PERSISTENCE
+// DISK PERSISTENCE WITH IMMEDIATE SAVE OPTION
 // ============================================
 function saveCacheToDisk() {
   try {
@@ -149,6 +157,15 @@ function saveCacheToDisk() {
     console.log(`Cache persisted: ${totalEntries} entries, ${sizeKB}KB`);
   } catch (err) {
     console.error('Failed to persist cache:', err.message);
+  }
+}
+
+// ⭐ Immediate save for critical data (enriched pools)
+function saveEnrichedPoolImmediately() {
+  try {
+    saveCacheToDisk();
+  } catch (err) {
+    console.error('Failed to immediately persist enriched pool:', err.message);
   }
 }
 
@@ -189,6 +206,11 @@ function loadCacheFromDisk() {
 
     const age = Math.round((now - payload.savedAt) / 1000);
     console.log(`Cache restored: ${loaded} entries loaded, ${expired} expired (saved ${age}s ago)`);
+    
+    // Log enriched pool cache stats specifically
+    if (enrichedPoolCache.size > 0) {
+      console.log(`  → ${enrichedPoolCache.size} enriched player pools ready for reuse`);
+    }
   } catch (err) {
     console.error('Failed to load cache from disk:', err.message);
     // Corrupt file — remove it so we don't fail every restart
@@ -687,15 +709,6 @@ async function enrichNBAPlayerAverages(players) {
 // ============================================
 // NHL ENRICHMENT — FIXED VERSION
 // ============================================
-// The NHL /player/{id}/landing endpoint returns stats in several possible locations:
-//   1. featuredStats.regularSeason.subSeason  (most common for active players)
-//   2. featuredStats.regularSeason.career      (fallback)
-//   3. careerTotals.regularSeason              (always present if player has NHL stats)
-//   4. last5Games[]                            (recent game log, can derive per-game)
-//
-// The previous code only checked #1, causing many players to show 0 projections.
-// This version checks all four sources and uses smarter batching to avoid 429s.
-
 async function enrichNHLPlayerAverages(players) {
   const nhlPlayers = players.filter(p => p.league === 'nhl');
   
@@ -898,6 +911,101 @@ function assignTierBadges(players) {
   
   assignTiers(nbaPlayers);
   assignTiers(nhlPlayers);
+}
+
+// ⭐⭐⭐ MASTER ENRICHED POOL FUNCTION ⭐⭐⭐
+// This is the key function that caches entire enriched player pools
+async function getOrBuildEnrichedPlayerPool(dateStr, leagues) {
+  const cacheKey = getEnrichedPoolKey(dateStr, leagues);
+  
+  // Check cache first
+  const cached = getCached(enrichedPoolCache, cacheKey, ENRICHED_POOL_TTL);
+  if (cached) {
+    console.log(`✅ Using cached enriched pool: ${cacheKey} (${cached.players.length} players)`);
+    return cached;
+  }
+
+  console.log(`🔨 Building new enriched pool: ${cacheKey}...`);
+  const startTime = Date.now();
+
+  // Fetch games
+  const fetchNBA = leagues === 'nba' || leagues === 'both';
+  const fetchNHL = leagues === 'nhl' || leagues === 'both';
+  
+  const [nbaGames, nhlGames] = await Promise.all([
+    fetchNBA ? fetchNBAGames(dateStr) : Promise.resolve([]),
+    fetchNHL ? fetchNHLGames(dateStr) : Promise.resolve([])
+  ]);
+  
+  const todayISO = getTodayISO();
+  const isFutureDate = dateStr && dateStr !== todayISO;
+  const upcomingNBA = isFutureDate ? nbaGames : nbaGames.filter(g => g.state !== 'post');
+  const upcomingNHL = isFutureDate ? nhlGames : nhlGames.filter(g => g.state !== 'OFF' && g.state !== 'FINAL');
+  
+  const allGames = [...nbaGames, ...nhlGames];
+  
+  if (upcomingNBA.length === 0 && upcomingNHL.length === 0) {
+    return { players: [], games: allGames, error: 'No games available' };
+  }
+  
+  // Fetch players
+  const [nbaPlayers, nhlPlayers] = await Promise.all([
+    upcomingNBA.length > 0 ? fetchNBAPlayersForGames(upcomingNBA) : Promise.resolve([]),
+    upcomingNHL.length > 0 ? fetchNHLPlayersForGames(upcomingNHL) : Promise.resolve([])
+  ]);
+  
+  const allPlayers = [...nbaPlayers, ...nhlPlayers];
+  
+  if (allPlayers.length === 0) {
+    return { players: [], games: allGames, error: 'No players available' };
+  }
+  
+  // Enrich with stats
+  await Promise.all([
+    nbaPlayers.length > 0 ? enrichNBAPlayerAverages(allPlayers) : Promise.resolve(),
+    nhlPlayers.length > 0 ? enrichNHLPlayerAverages(allPlayers) : Promise.resolve()
+  ]);
+  
+  // Filter NBA players to top 6 per team
+  const NBA_PLAYERS_PER_TEAM = 6;
+  const nbaByTeamGame = {};
+  const nonNba = [];
+  for (const p of allPlayers) {
+    if (p.league === 'nba') {
+      const key = `${p.team}-${p.gameId}`;
+      if (!nbaByTeamGame[key]) nbaByTeamGame[key] = [];
+      nbaByTeamGame[key].push(p);
+    } else {
+      nonNba.push(p);
+    }
+  }
+  const filteredNba = [];
+  for (const players of Object.values(nbaByTeamGame)) {
+    players.sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
+    filteredNba.push(...players.slice(0, NBA_PLAYERS_PER_TEAM));
+  }
+  const finalPlayers = [...filteredNba, ...nonNba];
+  
+  // Assign tiers and sort
+  assignTierBadges(finalPlayers);
+  finalPlayers.sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
+  
+  const result = {
+    players: finalPlayers,
+    games: allGames,
+    enrichedAt: Date.now()
+  };
+  
+  // Cache the result
+  setCache(enrichedPoolCache, cacheKey, result, 20); // Keep up to 20 different date+league combinations
+  
+  // ⭐ IMMEDIATELY persist to disk so other instances/restarts can use it
+  saveEnrichedPoolImmediately();
+  
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`✅ Built enriched pool ${cacheKey}: ${finalPlayers.length} players, ${upcomingNBA.length} NBA + ${upcomingNHL.length} NHL games (${elapsed}s)`);
+  
+  return result;
 }
 
 // ============================================
@@ -1309,6 +1417,18 @@ async function updateLiveScores(lobbyId) {
   });
 }
 
+// ⭐ CACHE WARMUP — Pre-fetch today's enriched pool on startup
+async function warmupCache() {
+  console.log('🔥 Warming up cache with today\'s games...');
+  try {
+    const todayISO = getTodayISO();
+    await getOrBuildEnrichedPlayerPool(todayISO, 'both');
+    console.log('✅ Cache warmup complete');
+  } catch (err) {
+    console.error('❌ Cache warmup failed:', err.message);
+  }
+}
+
 // ============================================
 // SOCKET.IO - REAL-TIME COMMUNICATION
 // ============================================
@@ -1526,79 +1646,23 @@ io.on('connection', (socket) => {
     
     io.to(lobby.id).emit('draftLoading', { message: 'Fetching games & players...' });
     
-    const fetchNBA = leagues === 'nba' || leagues === 'both';
-    const fetchNHL = leagues === 'nhl' || leagues === 'both';
+    // ⭐⭐⭐ USE THE CACHED ENRICHED POOL ⭐⭐⭐
+    const enrichedPool = await getOrBuildEnrichedPlayerPool(gameDate, leagues);
     
-    const [nbaGames, nhlGames] = await Promise.all([
-      fetchNBA ? fetchNBAGames(gameDate) : Promise.resolve([]),
-      fetchNHL ? fetchNHLGames(gameDate) : Promise.resolve([])
-    ]);
+    if (enrichedPool.error || enrichedPool.players.length === 0) {
+      lobby.state = 'waiting';
+      const dateLabel = gameDate ? ` on ${new Date(gameDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
+      io.to(lobby.id).emit('draftLoadingDone');
+      return socket.emit('error', { message: enrichedPool.error || `No players available to draft${dateLabel}!` });
+    }
     
-    const todayISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
-    const isFutureDate = gameDate && gameDate !== todayISO;
-    const upcomingNBA = isFutureDate ? nbaGames : nbaGames.filter(g => g.state !== 'post');
-    const upcomingNHL = isFutureDate ? nhlGames : nhlGames.filter(g => g.state !== 'OFF' && g.state !== 'FINAL');
-    
-    lobby.games = [...nbaGames, ...nhlGames];
+    // Deep clone the enriched pool players so each lobby gets its own copy
+    // (prevents multiple lobbies from modifying the same player objects)
+    lobby.availablePlayers = JSON.parse(JSON.stringify(enrichedPool.players));
+    lobby.games = enrichedPool.games;
     lobby.gameDate = gameDate;
     
-    if (upcomingNBA.length === 0 && upcomingNHL.length === 0) {
-      lobby.state = 'waiting';
-      const leagueStr = leagues === 'both' ? 'NBA or NHL' : leagues.toUpperCase();
-      const dateLabel = isFutureDate ? ` on ${new Date(gameDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
-      io.to(lobby.id).emit('draftLoadingDone');
-      return socket.emit('error', { message: `No ${leagueStr} games found${dateLabel}!` });
-    }
-    
-    const [nbaPlayers, nhlPlayers] = await Promise.all([
-      upcomingNBA.length > 0 ? fetchNBAPlayersForGames(upcomingNBA) : Promise.resolve([]),
-      upcomingNHL.length > 0 ? fetchNHLPlayersForGames(upcomingNHL) : Promise.resolve([])
-    ]);
-    
-    lobby.availablePlayers = [...nbaPlayers, ...nhlPlayers];
-    
-    if (lobby.availablePlayers.length === 0) {
-      lobby.state = 'waiting';
-      io.to(lobby.id).emit('draftLoadingDone');
-      return socket.emit('error', { message: 'No players available to draft. Try again when there are upcoming games.' });
-    }
-    
-    io.to(lobby.id).emit('draftLoading', { message: `Loading stats for ${nbaPlayers.length + nhlPlayers.length} players...` });
-    console.log(`Enriching ${nbaPlayers.length} NBA + ${nhlPlayers.length} NHL players with season stats...`);
-    await Promise.all([
-      nbaPlayers.length > 0 ? enrichNBAPlayerAverages(lobby.availablePlayers) : Promise.resolve(),
-      nhlPlayers.length > 0 ? enrichNHLPlayerAverages(lobby.availablePlayers) : Promise.resolve()
-    ]);
-    
-    // Filter NBA players to top 6 per team
-    const NBA_PLAYERS_PER_TEAM = 6;
-    const nbaByTeamGame = {};
-    const nonNba = [];
-    for (const p of lobby.availablePlayers) {
-      if (p.league === 'nba') {
-        const key = `${p.team}-${p.gameId}`;
-        if (!nbaByTeamGame[key]) nbaByTeamGame[key] = [];
-        nbaByTeamGame[key].push(p);
-      } else {
-        nonNba.push(p);
-      }
-    }
-    const filteredNba = [];
-    for (const players of Object.values(nbaByTeamGame)) {
-      players.sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
-      filteredNba.push(...players.slice(0, NBA_PLAYERS_PER_TEAM));
-    }
-    lobby.availablePlayers = [...filteredNba, ...nonNba];
-    
-    const trimmedCount = nbaPlayers.length - filteredNba.length;
-    if (trimmedCount > 0) {
-      console.log(`Trimmed ${trimmedCount} low-value NBA players (kept top ${NBA_PLAYERS_PER_TEAM}/team)`);
-    }
-    
-    assignTierBadges(lobby.availablePlayers);
-    lobby.availablePlayers.sort((a, b) => (b.projectedScore || 0) - (a.projectedScore || 0));
-    
-    console.log(`Draft pool ready: ${upcomingNBA.length} NBA games (${filteredNba.length} players), ${upcomingNHL.length} NHL games (${nonNba.length} players) | Settings: ${draftType} draft, ${timePerPick}s/pick, leagues=${leagues}, slots=${JSON.stringify(lobby.settings.rosterSlots)}`);
+    console.log(`Lobby ${lobby.id}: Using enriched pool (${lobby.availablePlayers.length} players from cache)`);
     
     const rosterSize = getRosterSize(lobby.settings);
     const shuffled = [...lobby.players].sort(() => Math.random() - 0.5);
@@ -1891,6 +1955,19 @@ app.get('/api/cache-stats', (req, res) => {
     cacheFileSize = Math.round(stat.size / 1024);
     cacheFileAge = Math.round((Date.now() - stat.mtimeMs) / 1000);
   }
+  
+  // Get enriched pool info
+  const enrichedPools = [];
+  for (const [key, entry] of enrichedPoolCache) {
+    const age = Math.round((Date.now() - entry.timestamp) / 1000);
+    enrichedPools.push({
+      key,
+      players: entry.data.players.length,
+      games: entry.data.games.length,
+      ageSeconds: age
+    });
+  }
+  
   res.json({
     memory: {
       nhlPlayerStats: nhlPlayerStatsCache.size,
@@ -1900,7 +1977,9 @@ app.get('/api/cache-stats', (req, res) => {
       boxscore: boxscoreCache.size,
       nhlRoster: nhlRosterCache.size,
       nbaRoster: nbaRosterCache.size,
+      enrichedPool: enrichedPoolCache.size,
     },
+    enrichedPools,
     disk: {
       file: CACHE_FILE,
       exists: cacheFileExists,
@@ -1959,4 +2038,6 @@ setInterval(() => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Draft Royale running on port ${PORT}`);
+  // Warm up cache after server starts (non-blocking)
+  setTimeout(warmupCache, 2000);
 });

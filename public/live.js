@@ -465,8 +465,33 @@ function goHome() {
 
 function leaveGame() {
   if (!confirm('Leave this game permanently? You won\'t be able to rejoin.')) return;
+  
+  console.log('🚪 Leaving game:', { myLobbyId, mySessionId });
+  
+  // Remove this specific game from multi-game storage
+  const games = JSON.parse(localStorage.getItem('dr_activeGames') || '{}');
+  if (myLobbyId) {
+    delete games[myLobbyId];
+    localStorage.setItem('dr_activeGames', JSON.stringify(games));
+    console.log('✅ Removed game from storage');
+  }
+  
+  // Notify server to remove from THIS lobby only
+  if (myLobbyId && mySessionId) {
+    socket.emit('leaveGame', { sessionId: mySessionId, lobbyId: myLobbyId });
+  }
+  
+  // Clean up old storage format (backwards compatibility)
   localStorage.removeItem('dr_activeGame');
-  window.location.href = '/';
+  
+  // Check if user has other active games
+  const remainingGames = Object.keys(games).length;
+  console.log(`📊 ${remainingGames} other games remaining`);
+  
+  // Redirect home (user can access other games from there)
+  setTimeout(() => {
+    window.location.href = '/';
+  }, 100);
 }
 
 // Toast

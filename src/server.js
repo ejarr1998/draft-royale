@@ -1912,6 +1912,32 @@ io.on('connection', (socket) => {
       return socket.emit('error', { message: enrichedPool.error || `No players available to draft${dateLabel}!` });
     }
     
+    // Validate that selected leagues have games
+    const nbaGames = enrichedPool.games.filter(g => g.league === 'nba');
+    const nhlGames = enrichedPool.games.filter(g => g.league === 'nhl');
+    
+    if (leagues === 'nba' && nbaGames.length === 0) {
+      lobby.state = 'waiting';
+      const dateLabel = gameDate ? ` on ${new Date(gameDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
+      io.to(lobby.id).emit('draftLoadingDone');
+      return socket.emit('error', { message: `No NBA games available${dateLabel}. Choose a different date or league.` });
+    }
+    
+    if (leagues === 'nhl' && nhlGames.length === 0) {
+      lobby.state = 'waiting';
+      const dateLabel = gameDate ? ` on ${new Date(gameDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
+      io.to(lobby.id).emit('draftLoadingDone');
+      return socket.emit('error', { message: `No NHL games available${dateLabel}. Choose a different date or league.` });
+    }
+    
+    if (leagues === 'both' && (nbaGames.length === 0 || nhlGames.length === 0)) {
+      lobby.state = 'waiting';
+      const missingLeague = nbaGames.length === 0 ? 'NBA' : 'NHL';
+      const dateLabel = gameDate ? ` on ${new Date(gameDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
+      io.to(lobby.id).emit('draftLoadingDone');
+      return socket.emit('error', { message: `No ${missingLeague} games available${dateLabel}. Select single league or choose different date.` });
+    }
+    
     // Deep clone the enriched pool players so each lobby gets its own copy
     // (prevents multiple lobbies from modifying the same player objects)
     lobby.availablePlayers = JSON.parse(JSON.stringify(enrichedPool.players));

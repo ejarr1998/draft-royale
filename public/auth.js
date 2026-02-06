@@ -16,12 +16,10 @@ auth.onAuthStateChanged(async (user) => {
     // Ensure user document exists
     await ensureUserDocument(user);
     
-    // Authenticate with Socket.IO server
-    socket.emit('authenticate', { 
-      uid: user.uid,
-      displayName: currentUser.displayName,
-      photoURL: currentUser.photoURL
-    });
+    // Authenticate socket with UID (if socket is already connected)
+    if (typeof authenticateSocket === 'function') {
+      authenticateSocket();
+    }
     
     // Load active games
     await loadActiveGamesFromFirestore();

@@ -461,13 +461,12 @@ function showWinnerBanner(players) {
 // Navigation
 function goHome() {
   console.log('🏠 Going home from live screen');
+  console.log('Current location:', window.location.href);
   
-  // Navigate to root with cache-busting parameter
-  const timestamp = Date.now();
-  const homeUrl = `/?t=${timestamp}`;
+  // Simplest possible approach - just navigate to root
+  window.location = '/';
   
-  console.log('Navigating to:', homeUrl);
-  window.location.href = homeUrl;
+  console.log('Navigation triggered');
 }
 
 function leaveGame() {

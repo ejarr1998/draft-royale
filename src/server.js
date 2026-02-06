@@ -5,6 +5,26 @@ const path = require('path');
 const { Server } = require('socket.io');
 const { v4: uuidv4 } = require('uuid');
 
+// Firebase Admin SDK
+const admin = require('firebase-admin');
+
+// Initialize Firebase Admin
+const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT 
+  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+  : null;
+
+if (serviceAccount) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    projectId: 'draft-royale'
+  });
+  console.log('🔥 Firebase Admin initialized');
+} else {
+  console.warn('⚠️  Firebase service account not found - running without persistence');
+}
+
+const firestoreDb = serviceAccount ? admin.firestore() : null;
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -1462,8 +1482,50 @@ function sanitizeName(name) {
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
   
+  // Firebase Authentication Handler
+  socket.on('authenticate', async ({ uid, displayName, photoURL }) => {
+    if (!uid) {
+      console.warn(`❌ No UID provided by ${socket.id}`);
+      return socket.emit('authError', { message: 'Authentication required' });
+    }
+    
+    console.log(`🔐 User authenticated: ${uid} (${displayName})`);
+    
+    socket.uid = uid;
+    socket.displayName = displayName;
+    socket.photoURL = photoURL;
+    
+    // Create/update session with UID
+    sessions[uid] = {
+      socketId: socket.id,
+      uid,
+      displayName,
+      photoURL,
+      lobbyId: sessions[uid]?.lobbyId || null
+    };
+    
+    // If user was in a lobby, rejoin
+    if (sessions[uid].lobbyId) {
+      const lobby = lobbies[sessions[uid].lobbyId];
+      if (lobby) {
+        socket.join(lobby.id);
+        socket.lobbyId = lobby.id;
+        console.log(`🔄 User ${uid} rejoined lobby ${lobby.id}`);
+      }
+    }
+    
+    socket.emit('authenticated', { uid, displayName });
+  });
+  
   socket.on('createLobby', async ({ playerName, maxPlayers, isPublic, settings, sessionId }) => {
-    if (sessions[sessionId] && lobbies[sessions[sessionId].lobbyId]) {
+    // Support both UID (new) and sessionId (old) during migration
+    const userId = socket.uid || sessionId;
+    
+    if (!userId) {
+      return socket.emit('error', { message: 'Please sign in first' });
+    }
+    
+    if (sessions[userId] && lobbies[sessions[userId].lobbyId]) {
       return socket.emit('error', { message: 'You are already in a game' });
     }
     
@@ -1471,28 +1533,59 @@ io.on('connection', (socket) => {
     const lobby = createLobby(safeName, maxPlayers, isPublic, settings || {});
     
     const player = {
-      id: sessionId,
+      id: userId,  // Use UID instead of sessionId
+      uid: socket.uid || null,  // Store UID separately
       name: safeName,
+      photoURL: socket.photoURL || null,
       roster: [],
       totalScore: 0,
       isHost: true
     };
     
     lobby.players.push(player);
-    lobby.host = sessionId;
+    lobby.host = userId;
     
     socket.join(lobby.id);
     socket.lobbyId = lobby.id;
-    socket.sessionId = sessionId;
+    socket.sessionId = sessionId || userId;  // Backwards compat
     
-    sessions[sessionId] = { lobbyId: lobby.id, socketId: socket.id, playerName: safeName };
+    sessions[userId] = { 
+      lobbyId: lobby.id, 
+      socketId: socket.id, 
+      playerName: safeName,
+      uid: socket.uid,
+      displayName: socket.displayName
+    };
+    
+    // Save lobby to Firestore
+    if (firestoreDb) {
+      try {
+        await firestoreDb.collection('lobbies').doc(lobby.id).set({
+          ...lobby,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Add to user's active games
+        if (socket.uid) {
+          await firestoreDb.collection('users').doc(socket.uid).update({
+            activeGames: admin.firestore.FieldValue.arrayUnion(lobby.id)
+          });
+        }
+        
+        console.log(`💾 Lobby ${lobby.id} saved to Firestore`);
+      } catch (err) {
+        console.error('Error saving lobby to Firestore:', err);
+      }
+    }
     
     socket.emit('lobbyCreated', {
       lobbyId: lobby.id,
       lobby: getLobbyState(lobby)
     });
     
-    console.log(`Lobby ${lobby.id} created by ${playerName} (session ${sessionId})`);
+    console.log(`Lobby ${lobby.id} created by ${playerName} (${socket.uid ? 'uid: ' + socket.uid : 'session: ' + sessionId})`);
+  });
   });
 
   socket.on('updateSettings', ({ settings }) => {

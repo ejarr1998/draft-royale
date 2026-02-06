@@ -1,10 +1,51 @@
-const socket = io();
+// Socket will be initialized after Firebase auth
+let socket = null;
 let myName = '', myLobbyId = null, mySocketId = null, mySessionId = null, isHost = false;
 let currentFilter = 'all', currentPosFilter = 'all', availablePlayers = [], draftTimerInterval = null;
 let draftGames = [], currentGameFilter = 'all';
 let lobbyState = null, amIDrafting = false, draftOrderList = [];
 
-// Session management - persists across refreshes AND tab closes
+// Initialize socket connection (called after Firebase auth)
+function initializeSocket() {
+  if (socket) return; // Already initialized
+  
+  console.log('🔌 Initializing Socket.IO connection');
+  socket = io();
+  
+  // Authenticate with server after connection
+  socket.on('connect', () => {
+    console.log('✅ Socket connected:', socket.id);
+    
+    if (currentUser) {
+      // Send Firebase UID to server
+      socket.emit('authenticate', {
+        uid: currentUser.uid,
+        displayName: currentUser.displayName,
+        photoURL: currentUser.photoURL
+      });
+    } else {
+      // Fallback to old session system
+      socket.emit('authenticate', {
+        uid: null,
+        sessionId: mySessionId
+      });
+    }
+  });
+  
+  socket.on('authenticated', ({ uid }) => {
+    console.log('✅ Authenticated with server:', uid);
+  });
+  
+  socket.on('authError', ({ message }) => {
+    console.error('❌ Authentication error:', message);
+    alert('Please sign in to continue');
+  });
+  
+  // Set up all other socket listeners
+  setupSocketListeners();
+}
+
+// Session management - persists across refreshes AND tab closes  
 function getSessionId() {
   let sid = localStorage.getItem('dr_sessionId');
   if (!sid) {

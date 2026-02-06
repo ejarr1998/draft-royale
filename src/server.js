@@ -1418,6 +1418,15 @@ async function updateLiveScores(lobbyId) {
     state: lobby.state
   });
   
+  // Save updated scores to Firestore (throttled - only every 5 updates)
+  if (!lobby._firestoreSaveCount) lobby._firestoreSaveCount = 0;
+  lobby._firestoreSaveCount++;
+  
+  if (lobby._firestoreSaveCount >= 5 || lobby.state === 'finished') {
+    saveLobbyToFirestore(lobby);
+    lobby._firestoreSaveCount = 0;
+  }
+  
   } catch (err) {
     console.error(`❌ ERROR in updateLiveScores for lobby ${lobbyId}:`, err.message);
     console.error(err.stack);
@@ -1470,6 +1479,33 @@ function sendPersonalizedPlayerPool(lobby, drafterId) {
     availablePlayers: filteredPlayers,
     fullLeagues: { nba: nbaFull, nhl: nhlFull }
   });
+}
+
+// ============================================
+// FIRESTORE PERSISTENCE HELPERS
+// ============================================
+async function saveLobbyToFirestore(lobby) {
+  if (!firestoreDb) return;
+  
+  try {
+    await firestoreDb.collection('lobbies').doc(lobby.id).set({
+      ...lobby,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+  } catch (err) {
+    console.error(`Error saving lobby ${lobby.id} to Firestore:`, err);
+  }
+}
+
+async function deleteLobbyFromFirestore(lobbyId) {
+  if (!firestoreDb) return;
+  
+  try {
+    await firestoreDb.collection('lobbies').doc(lobbyId).delete();
+    console.log(`🗑️  Deleted lobby ${lobbyId} from Firestore`);
+  } catch (err) {
+    console.error(`Error deleting lobby ${lobbyId}:`, err);
+  }
 }
 
 // ============================================
@@ -1680,40 +1716,74 @@ io.on('connection', (socket) => {
     console.log(`${playerName} joined lobby ${code} (session ${sessionId})`);
   });
   
-  socket.on('rejoin', ({ sessionId }) => {
-    const session = sessions[sessionId];
+  socket.on('rejoin', async ({ sessionId, uid }) => {
+    // Support both UID (new) and sessionId (old)
+    const userId = uid || socket.uid || sessionId;
+    
+    if (!userId) {
+      return socket.emit('rejoinFailed', { reason: 'no_auth' });
+    }
+    
+    // If Firebase UID is provided, try loading from Firestore first
+    if (uid && firestoreDb) {
+      try {
+        const userDoc = await firestoreDb.collection('users').doc(uid).get();
+        const activeGameIds = userDoc.data()?.activeGames || [];
+        
+        // Try to restore lobby from Firestore
+        for (const lobbyId of activeGameIds) {
+          const lobbyDoc = await firestoreDb.collection('lobbies').doc(lobbyId).get();
+          if (lobbyDoc.exists) {
+            const lobbyData = lobbyDoc.data();
+            
+            // Restore lobby to memory if not there
+            if (!lobbies[lobbyId]) {
+              lobbies[lobbyId] = lobbyData;
+              console.log(`🔄 Restored lobby ${lobbyId} from Firestore`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error loading from Firestore:', err);
+      }
+    }
+    
+    const session = sessions[userId];
     if (!session) {
       return socket.emit('rejoinFailed', { reason: 'no_session' });
     }
     
     const lobby = lobbies[session.lobbyId];
     if (!lobby) {
-      delete sessions[sessionId];
+      delete sessions[userId];
       return socket.emit('rejoinFailed', { reason: 'lobby_gone' });
     }
     
-    const player = lobby.players.find(p => p.id === sessionId);
+    const player = lobby.players.find(p => p.id === userId || p.uid === uid);
     if (!player) {
-      delete sessions[sessionId];
+      delete sessions[userId];
       return socket.emit('rejoinFailed', { reason: 'player_gone' });
     }
     
     session.socketId = socket.id;
     socket.lobbyId = lobby.id;
-    socket.sessionId = sessionId;
+    socket.sessionId = sessionId || userId;
+    socket.uid = uid || socket.uid;
     player.disconnected = false;
     
     socket.join(lobby.id);
     
     const lobbyStateData = getLobbyState(lobby);
-    const playerIsHost = lobby.host === sessionId;
+    const playerIsHost = lobby.host === userId || lobby.host === uid;
+    
+    console.log(`🔄 Player ${player.name} rejoined lobby ${lobby.id} (${uid ? 'uid: ' + uid : 'session: ' + userId})`);
     
     if (lobby.state === 'waiting') {
       socket.emit('rejoinState', {
         phase: 'waiting',
         lobby: lobbyStateData,
         isHost: playerIsHost,
-        sessionId
+        sessionId: userId
       });
     } else if (lobby.state === 'drafting') {
       const elapsed = lobby.pickStartedAt ? Math.floor((Date.now() - lobby.pickStartedAt) / 1000) : 0;
@@ -1723,7 +1793,7 @@ io.on('connection', (socket) => {
         phase: 'drafting',
         lobby: lobbyStateData,
         isHost: playerIsHost,
-        sessionId,
+        sessionId: userId,
         availablePlayers: lobby.availablePlayers,
         draftOrder: lobby.draftOrder,
         currentPick: lobby.currentPick,
@@ -1740,14 +1810,14 @@ io.on('connection', (socket) => {
       });
       
       // Send personalized pool if it's their turn or will be soon
-      sendPersonalizedPlayerPool(lobby, sessionId);
+      sendPersonalizedPlayerPool(lobby, userId);
     } else {
       console.log(`📥 Rejoining ${player.name} to ${lobby.state} game in lobby ${lobby.id}`);
       socket.emit('rejoinState', {
         phase: lobby.state,
         lobby: lobbyStateData,
         isHost: playerIsHost,
-        sessionId,
+        sessionId: userId,
         players: lobby.players.map(p => ({
           id: p.id, name: p.name, roster: p.roster, totalScore: p.totalScore
         }))
@@ -1877,6 +1947,10 @@ io.on('connection', (socket) => {
     sendPersonalizedPlayerPool(lobby, lobby.draftOrder[0]);
     
     startDraftTimer(lobby);
+    
+    // Save to Firestore
+    await saveLobbyToFirestore(lobby);
+    
     console.log(`Draft started in lobby ${lobby.id}`);
   });
   
@@ -1941,6 +2015,9 @@ io.on('connection', (socket) => {
       
       startDraftTimer(lobby);
     }
+    
+    // Save state to Firestore after pick
+    saveLobbyToFirestore(lobby);
   });
   
   socket.on('chatMessage', ({ message }) => {
@@ -2128,7 +2205,7 @@ function startDraftTimer(lobby) {
   }, timePerPick * 1000);
 }
 
-function endDraft(lobby) {
+async function endDraft(lobby) {
   lobby.state = 'live';
   
   if (lobby.draftTimer) {
@@ -2150,6 +2227,10 @@ function endDraft(lobby) {
   }, SCORE_UPDATE_INTERVAL);
   
   updateLiveScores(lobby.id);
+  
+  // Save to Firestore
+  await saveLobbyToFirestore(lobby);
+  
   console.log(`Draft complete in lobby ${lobby.id}, live scoring started`);
 }
 
@@ -2292,9 +2373,52 @@ setInterval(() => {
 // ============================================
 // START SERVER
 // ============================================
+// Restore active lobbies from Firestore on startup
+async function restoreLobbiesFromFirestore() {
+  if (!firestoreDb) {
+    console.log('⏭️  Skipping Firestore restore (not configured)');
+    return;
+  }
+  
+  try {
+    console.log('🔄 Restoring active lobbies from Firestore...');
+    
+    const snapshot = await firestoreDb.collection('lobbies')
+      .where('state', 'in', ['waiting', 'drafting', 'live'])
+      .get();
+    
+    let restoredCount = 0;
+    
+    snapshot.forEach(doc => {
+      const lobby = doc.data();
+      lobbies[lobby.id] = lobby;
+      
+      // Restart score intervals for live games
+      if (lobby.state === 'live') {
+        lobby.scoreInterval = setInterval(() => {
+          updateLiveScores(lobby.id);
+        }, SCORE_UPDATE_INTERVAL);
+        console.log(`  ✅ Restored live game: ${lobby.id} - restarted scoring`);
+      } else {
+        console.log(`  ✅ Restored ${lobby.state} game: ${lobby.id}`);
+      }
+      
+      restoredCount++;
+    });
+    
+    console.log(`🎉 Restored ${restoredCount} active lobbies from Firestore`);
+  } catch (err) {
+    console.error('❌ Error restoring lobbies from Firestore:', err);
+  }
+}
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`Draft Royale running on port ${PORT}`);
-  // Warm up cache after server starts (non-blocking)
+  
+  // Restore lobbies from Firestore first
+  await restoreLobbiesFromFirestore();
+  
+  // Then warm up cache (non-blocking)
   setTimeout(warmupCache, 2000);
 });

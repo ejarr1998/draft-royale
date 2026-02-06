@@ -168,8 +168,49 @@ function showLoginScreen() {
 
 // Show main app
 function showMainApp() {
-  document.getElementById('loginScreen')?.classList.remove('active');
-  document.getElementById('homeScreen')?.classList.add('active');
+  console.log('📱 Showing main app, hiding login screen');
+  
+  // Hide login, show home
+  const loginScreen = document.getElementById('loginScreen');
+  const homeScreen = document.getElementById('homeScreen');
+  
+  if (loginScreen) {
+    loginScreen.classList.remove('active');
+    loginScreen.style.display = 'none'; // Force hide
+  }
+  
+  if (homeScreen) {
+    homeScreen.classList.add('active');
+    homeScreen.style.display = 'block'; // Force show
+  }
+  
+  // Add user profile indicator to home screen
+  addUserProfile();
+}
+
+// Add user profile display
+function addUserProfile() {
+  if (!currentUser) return;
+  
+  const homeScreen = document.getElementById('homeScreen');
+  if (!homeScreen) return;
+  
+  // Check if profile already exists
+  let profileEl = document.getElementById('userProfile');
+  if (!profileEl) {
+    profileEl = document.createElement('div');
+    profileEl.id = 'userProfile';
+    profileEl.className = 'user-profile';
+    homeScreen.insertBefore(profileEl, homeScreen.firstChild);
+  }
+  
+  profileEl.innerHTML = `
+    <div class="user-info">
+      ${currentUser.photoURL ? `<img src="${currentUser.photoURL}" class="user-avatar" />` : `<div class="user-avatar-placeholder">${currentUser.displayName[0]}</div>`}
+      <span class="user-name">${currentUser.displayName}</span>
+    </div>
+    <button class="btn-text btn-signout" onclick="signOut()">Sign Out</button>
+  `;
 }
 
 // Handle email sign-in form

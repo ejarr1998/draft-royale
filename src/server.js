@@ -2033,7 +2033,7 @@ io.on('connection', (socket) => {
     });
   });
   
-  socket.on('leaveGame', ({ sessionId, lobbyId }) => {
+  socket.on('leaveGame', async ({ sessionId, lobbyId }) => {
     console.log(`🚪 Player leaving game:`, { sessionId, lobbyId });
     
     const lobby = lobbies[lobbyId];
@@ -2050,8 +2050,23 @@ io.on('connection', (socket) => {
     
     console.log(`👋 ${player.name} leaving lobby ${lobbyId}`);
     
+    // Save player UID before removing (for Firestore cleanup)
+    const playerUid = player.uid;
+    
     // Remove player from THIS lobby only
     lobby.players = lobby.players.filter(p => p.id !== sessionId);
+    
+    // Remove this lobby from the player's activeGames in Firestore
+    if (playerUid && firestoreDb) {
+      try {
+        await firestoreDb.collection('users').doc(playerUid).update({
+          activeGames: admin.firestore.FieldValue.arrayRemove(lobbyId)
+        });
+        console.log(`✅ Removed lobby ${lobbyId} from ${player.name}'s active games`);
+      } catch (err) {
+        console.error(`Error removing lobby from user ${playerUid}:`, err);
+      }
+    }
     
     // Update session to remove this lobby reference
     // (but keep session alive - they might be in other games)
@@ -2089,6 +2104,11 @@ io.on('connection', (socket) => {
       if (idx !== -1) {
         publicLobbies.splice(idx, 1);
         console.log('✅ Removed from public lobbies');
+      }
+      
+      // Delete from Firestore (players already removed from their activeGames above)
+      if (firestoreDb) {
+        await deleteLobbyFromFirestore(lobbyId);
       }
     } else {
       // Transfer host if needed

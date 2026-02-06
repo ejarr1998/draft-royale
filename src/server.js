@@ -1593,26 +1593,24 @@ io.on('connection', (socket) => {
       displayName: socket.displayName
     };
     
-    // Save lobby to Firestore
+    // Save lobby to Firestore (non-blocking)
     if (firestoreDb) {
-      try {
-        await firestoreDb.collection('lobbies').doc(lobby.id).set({
-          ...lobby,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
+      firestoreDb.collection('lobbies').doc(lobby.id).set({
+        ...lobby,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }).then(() => {
+        console.log(`💾 Lobby ${lobby.id} saved to Firestore`);
         
         // Add to user's active games
         if (socket.uid) {
-          await firestoreDb.collection('users').doc(socket.uid).update({
+          return firestoreDb.collection('users').doc(socket.uid).update({
             activeGames: admin.firestore.FieldValue.arrayUnion(lobby.id)
           });
         }
-        
-        console.log(`💾 Lobby ${lobby.id} saved to Firestore`);
-      } catch (err) {
+      }).catch(err => {
         console.error('Error saving lobby to Firestore:', err);
-      }
+      });
     }
     
     socket.emit('lobbyCreated', {
@@ -1973,8 +1971,8 @@ io.on('connection', (socket) => {
     
     startDraftTimer(lobby);
     
-    // Save to Firestore
-    await saveLobbyToFirestore(lobby);
+    // Save to Firestore (non-blocking - let it happen in background)
+    saveLobbyToFirestore(lobby);
     
     console.log(`Draft started in lobby ${lobby.id}`);
   });
@@ -2134,7 +2132,7 @@ io.on('connection', (socket) => {
       
       // Delete from Firestore (players already removed from their activeGames above)
       if (firestoreDb) {
-        await deleteLobbyFromFirestore(lobbyId);
+        deleteLobbyFromFirestore(lobbyId); // Non-blocking
       }
     } else {
       // Transfer host if needed
@@ -2250,7 +2248,7 @@ function startDraftTimer(lobby) {
   }, timePerPick * 1000);
 }
 
-async function endDraft(lobby) {
+function endDraft(lobby) {
   lobby.state = 'live';
   
   if (lobby.draftTimer) {
@@ -2273,8 +2271,8 @@ async function endDraft(lobby) {
   
   updateLiveScores(lobby.id);
   
-  // Save to Firestore
-  await saveLobbyToFirestore(lobby);
+  // Save to Firestore (non-blocking)
+  saveLobbyToFirestore(lobby);
   
   console.log(`Draft complete in lobby ${lobby.id}, live scoring started`);
 }

@@ -1083,43 +1083,67 @@ async function fetchLiveNBAStats(gameId) {
 async function fetchLiveNHLStats(gameId) {
   const cacheKey = `nhl-box-${gameId}`;
   const cached = getCached(boxscoreCache, cacheKey, BOXSCORE_CACHE_TTL);
-  if (cached) return cached;
+  if (cached) {
+    console.log(`✅ Using cached NHL stats for ${gameId}: ${Object.keys(cached).length} players`);
+    return cached;
+  }
 
   try {
+    console.log(`🏒 Fetching NHL boxscore for game ${gameId}...`);
     const data = await fetchWithRetry(
       `https://api-web.nhle.com/v1/gamecenter/${gameId}/boxscore`,
       { label: `NHL boxscore ${gameId}`, maxRetries: 1 }
     );
-    if (!data) return {};
+    
+    if (!data) {
+      console.log(`❌ No data returned for NHL game ${gameId}`);
+      return {};
+    }
+    
+    console.log(`📦 NHL boxscore received for ${gameId}:`, {
+      homeTeam: data.homeTeam ? 'present' : 'missing',
+      awayTeam: data.awayTeam ? 'present' : 'missing',
+      homeForwards: data.homeTeam?.forwards?.length || 0,
+      awayForwards: data.awayTeam?.forwards?.length || 0,
+      homeDefense: data.homeTeam?.defense?.length || 0,
+      awayDefense: data.awayTeam?.defense?.length || 0,
+      homeGoalies: data.homeTeam?.goalies?.length || 0,
+      awayGoalies: data.awayTeam?.goalies?.length || 0
+    });
     
     const playerStats = {};
     
     for (const side of ['homeTeam', 'awayTeam']) {
       for (const posGroup of ['forwards', 'defense']) {
         for (const player of (data[side]?.[posGroup] || [])) {
-          playerStats[`nhl-${player.playerId}`] = {
+          const playerId = `nhl-${player.playerId}`;
+          playerStats[playerId] = {
             goals: player.goals || 0,
             assists: player.assists || 0,
             shotsOnGoal: player.sog || 0,
             blockedShots: player.blockedShots || 0
           };
+          console.log(`   ${playerId}: ${player.goals}G ${player.assists}A ${player.sog}SOG`);
         }
       }
       
       for (const player of (data[side]?.goalies || [])) {
-        playerStats[`nhl-${player.playerId}`] = {
+        const playerId = `nhl-${player.playerId}`;
+        playerStats[playerId] = {
           saves: player.saveShotsAgainst ? 
             (parseInt(player.saveShotsAgainst.split('/')[0]) || 0) : 0,
           goalsAgainst: player.goalsAgainst || 0,
           isGoalie: true
         };
+        console.log(`   ${playerId} (G): ${playerStats[playerId].saves} saves, ${playerStats[playerId].goalsAgainst} GA`);
       }
     }
 
+    console.log(`✅ Parsed ${Object.keys(playerStats).length} NHL players from game ${gameId}`);
     setCache(boxscoreCache, cacheKey, playerStats, 200);
     return playerStats;
   } catch (err) {
-    console.error(`Error fetching NHL stats for ${gameId}:`, err);
+    console.error(`❌ Error fetching NHL stats for ${gameId}:`, err.message);
     return {};
   }
 }
@@ -1163,17 +1187,18 @@ function calculateFantasyScore(player) {
 }
 
 async function updateLiveScores(lobbyId) {
-  const lobby = lobbies[lobbyId];
-  console.log(`⏰ updateLiveScores called for lobby ${lobbyId}:`, {
-    exists: !!lobby,
-    state: lobby?.state,
-    playerCount: lobby?.players.length
-  });
-  
-  if (!lobby || lobby.state !== 'live') {
-    console.warn(`❌ Skipping score update: ${!lobby ? 'lobby not found' : `state is ${lobby.state}`}`);
-    return;
-  }
+  try {
+    const lobby = lobbies[lobbyId];
+    console.log(`⏰ updateLiveScores called for lobby ${lobbyId}:`, {
+      exists: !!lobby,
+      state: lobby?.state,
+      playerCount: lobby?.players.length
+    });
+    
+    if (!lobby || lobby.state !== 'live') {
+      console.warn(`❌ Skipping score update: ${!lobby ? 'lobby not found' : `state is ${lobby.state}`}`);
+      return;
+    }
   
   const nbaGameIds = new Set();
   const nhlGameIds = new Set();
@@ -1194,25 +1219,55 @@ async function updateLiveScores(lobbyId) {
   
   for (const player of lobby.players) {
     let totalScore = 0;
+    console.log(`\n🎮 Calculating score for ${player.name}:`);
+    
     for (const pick of player.roster || []) {
+      const hadStats = !!pick.stats;
+      
       if (allStats[pick.id]) {
         pick.stats = allStats[pick.id];
         pick.isGoalie = pick.isGoalie || allStats[pick.id].isGoalie;
       }
+      
       pick.fantasyScore = calculateFantasyScore(pick);
       totalScore += pick.fantasyScore;
+      
+      if (pick.league === 'nhl') {
+        console.log(`   ${pick.league.toUpperCase()} ${pick.name} (${pick.id}):`, {
+          foundStats: !!allStats[pick.id],
+          hadStats,
+          stats: pick.stats,
+          fantasyScore: pick.fantasyScore
+        });
+      }
     }
     player.totalScore = Math.round(totalScore * 10) / 10;
+    console.log(`   ✅ Total: ${player.totalScore} pts`);
   }
   
   // Check game states (use schedule cache — at most 1 fetch per league per 2 min)
   let allFinished = true;
   const hasNBA = lobby.games.some(g => g.league === 'nba');
   const hasNHL = lobby.games.some(g => g.league === 'nhl');
+  
+  console.log(`\n🏁 Checking if games finished:`, {
+    hasNBA,
+    hasNHL,
+    totalGames: lobby.games.length
+  });
+  
   const [nbaSchedule, nhlSchedule] = await Promise.all([
     hasNBA ? fetchNBAGames(lobby.gameDate) : Promise.resolve([]),
     hasNHL ? fetchNHLGames(lobby.gameDate) : Promise.resolve([])
   ]);
+  
+  console.log(`   Fetched schedules: ${nbaSchedule.length} NBA, ${nhlSchedule.length} NHL`);
+  
+  // If we expected schedules but got nothing, something's wrong - don't end game
+  if ((hasNBA && nbaSchedule.length === 0) || (hasNHL && nhlSchedule.length === 0)) {
+    console.log(`⚠️  WARNING: Expected schedules but got empty arrays - keeping game alive`);
+    allFinished = false;
+  }
 
   // Helper to format game status for display
   function formatGameStatus(game) {
@@ -1277,15 +1332,29 @@ async function updateLiveScores(lobbyId) {
   for (const game of lobby.games) {
     if (game.league === 'nba') {
       const found = nbaSchedule.find(g => g.gameId === game.gameId);
-      if (found) { game.state = found.state; game.status = found.status; }
+      if (found) { 
+        game.state = found.state; 
+        game.status = found.status; 
+        console.log(`   NBA ${game.awayTeam} @ ${game.homeTeam}: ${found.state}`);
+      } else {
+        console.log(`   ⚠️  NBA game ${game.gameId} not found in schedule`);
+      }
       if (!found || found.state !== 'post') allFinished = false;
     }
     if (game.league === 'nhl') {
       const found = nhlSchedule.find(g => g.gameId === game.gameId);
-      if (found) { game.state = found.state; game.status = found.status; }
+      if (found) { 
+        game.state = found.state; 
+        game.status = found.status; 
+        console.log(`   NHL ${game.awayTeam} @ ${game.homeTeam}: ${found.state}`);
+      } else {
+        console.log(`   ⚠️  NHL game ${game.gameId} not found in schedule`);
+      }
       if (!found || (found.state !== 'OFF' && found.state !== 'FINAL')) allFinished = false;
     }
   }
+  
+  console.log(`   📊 All games finished? ${allFinished}`);
   
   // Adaptive polling: slow when no games started, fast when live
   const anyStarted = lobby.games.some(g =>
@@ -1328,6 +1397,12 @@ async function updateLiveScores(lobbyId) {
     })),
     state: lobby.state
   });
+  
+  } catch (err) {
+    console.error(`❌ ERROR in updateLiveScores for lobby ${lobbyId}:`, err.message);
+    console.error(err.stack);
+    // Don't end the game on error - keep it alive
+  }
 }
 
 // ⭐ CACHE WARMUP — Pre-fetch today's enriched pool on startup

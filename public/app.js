@@ -228,6 +228,16 @@ socket.on('connect', () => {
     renderActiveGameBanner();
     return;
   }
+  
+  // Check if user intentionally navigated home (don't auto-rejoin)
+  const skipRejoin = params.get('skipRejoin');
+  if (skipRejoin) {
+    console.log('⏭️ Skipping auto-rejoin (user went home intentionally)');
+    window.history.replaceState({}, '', window.location.pathname); // Clean URL
+    renderActiveGameBanner();
+    return;
+  }
+  
   const ag = getActiveGame();
   if (ag && mySessionId) {
     socket.emit('rejoin', { sessionId: mySessionId, uid: currentUser?.uid });

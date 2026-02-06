@@ -1001,11 +1001,22 @@ function renderPlayerPool() {
     const tierLabel = p.tierLabel || '⚪ Bench';
     const leagueFull = (p.league === 'nba' && nbaFull) || (p.league === 'nhl' && nhlFull);
     const isLocked = !amIDrafting || leagueFull;
+    
+    // Injury status tag
+    let injuryTag = '';
+    if (p.injuryStatus) {
+      const status = p.injuryStatus.toUpperCase();
+      const tagClass = status === 'OUT' ? 'injury-out' : 
+                       status === 'DOUBTFUL' ? 'injury-doubtful' : 
+                       'injury-questionable';
+      injuryTag = `<span class="injury-tag ${tagClass}">${status}</span>`;
+    }
+    
     return `
     <div class="player-card ${p.league} ${isLocked?'disabled':''} ${leagueFull?'league-full':''}" onclick="${leagueFull?'':`openPlayerModal('${p.id}')`}">
       ${p.headshot?`<img class="pc-photo" src="${p.headshot}" onerror="this.outerHTML='<div class=\\'pc-photo-placeholder\\'><span class=\\'pc-pos-badge\\'>${p.position}</span></div>'">`:`<div class="pc-photo-placeholder"><span class="pc-pos-badge">${p.position}</span></div>`}
       <div class="pc-info">
-        <div class="pc-name">${p.name}</div>
+        <div class="pc-name">${p.name} ${injuryTag}</div>
         <div class="pc-meta"><div class="pc-league-dot ${p.league}"></div><span class="pc-team">${p.team} · ${p.position}</span></div>
         <div class="pc-avgs">${avgLine}</div>
       </div>

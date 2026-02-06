@@ -101,6 +101,7 @@ body::before {
   border: 2px solid var(--border); background: var(--bg2);
   color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 1rem; font-weight: 500;
   transition: border-color 0.25s, box-shadow 0.25s;
+  box-sizing: border-box; /* Prevent overflow */
 }
 .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(255,87,34,0.12); }
 .input::placeholder { color: var(--text-dim); }
@@ -1700,10 +1701,13 @@ button, .player-card, .roster-player-card, .rpc-main, .rank-list-entry { touch-a
 #loginScreen {
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
   min-height: 100vh;
-  display: flex;
   align-items: center;
   justify-content: center;
   padding: 20px;
+}
+
+#loginScreen.active {
+  display: flex;
 }
 
 .login-container {
@@ -1883,5 +1887,14 @@ button, .player-card, .roster-player-card, .rpc-main, .rank-list-entry { touch-a
   
   .user-name {
     font-size: 0.9rem;
+  }
+  
+  .home-card {
+    padding: 16px;
+  }
+  
+  .input {
+    font-size: 0.95rem;
+    padding: 12px 14px;
   }
 }

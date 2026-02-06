@@ -356,6 +356,14 @@ body::before {
 .seg-btn.seg-active-both {
   background: linear-gradient(135deg, var(--nba), var(--nhl)); color: #fff;
 }
+.seg-btn.seg-btn-disabled,
+.seg-btn.seg-btn-disabled:hover {
+  opacity: 0.3;
+  cursor: not-allowed;
+  pointer-events: none;
+  background: transparent;
+  color: var(--text-dim);
+}
 
 /* Time stepper */
 .stepper {

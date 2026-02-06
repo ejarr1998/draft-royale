@@ -1622,7 +1622,6 @@ io.on('connection', (socket) => {
     
     console.log(`Lobby ${lobby.id} created by ${playerName} (${socket.uid ? 'uid: ' + socket.uid : 'session: ' + sessionId})`);
   });
-  });
 
   socket.on('updateSettings', ({ settings }) => {
     const lobby = lobbies[socket.lobbyId];

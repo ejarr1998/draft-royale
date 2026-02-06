@@ -936,8 +936,33 @@ async function getOrBuildEnrichedPlayerPool(dateStr, leagues) {
   
   const todayISO = getTodayISO();
   const isFutureDate = dateStr && dateStr !== todayISO;
-  const upcomingNBA = isFutureDate ? nbaGames : nbaGames.filter(g => g.state !== 'post');
-  const upcomingNHL = isFutureDate ? nhlGames : nhlGames.filter(g => g.state !== 'OFF' && g.state !== 'FINAL');
+  
+  console.log(`📅 Building pool for date: ${dateStr || 'today'} (${dateStr || todayISO})`);
+  console.log(`   isFutureDate: ${isFutureDate}`);
+  console.log(`   NBA games fetched: ${nbaGames.length}, NHL games fetched: ${nhlGames.length}`);
+  
+  // ALWAYS filter to only games that haven't started yet
+  // For today: Only include 'pre' / 'FUT' state games
+  // For future dates: Include all games (since they won't have started yet)
+  const upcomingNBA = nbaGames.filter(g => {
+    // For future dates, include all games
+    if (isFutureDate) return true;
+    // For today/past, only include games that haven't started
+    const include = g.state === 'pre';
+    if (!include) console.log(`   ❌ Excluding NBA game: ${g.awayTeam} @ ${g.homeTeam} (state: ${g.state})`);
+    return include;
+  });
+    
+  const upcomingNHL = nhlGames.filter(g => {
+    // For future dates, include all games
+    if (isFutureDate) return true;
+    // For today/past, only include games that haven't started
+    const include = g.state === 'FUT' || g.state === 'PRE';
+    if (!include) console.log(`   ❌ Excluding NHL game: ${g.awayTeam} @ ${g.homeTeam} (state: ${g.state})`);
+    return include;
+  });
+  
+  console.log(`   ✅ Games after filter: ${upcomingNBA.length} NBA, ${upcomingNHL.length} NHL`);
   
   const allGames = [...nbaGames, ...nhlGames];
   

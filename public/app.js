@@ -1,49 +1,10 @@
-// Socket will be initialized after Firebase auth
-let socket = null;
+// Initialize socket immediately (listeners are defined below)
+const socket = io();
 let myName = '', myLobbyId = null, mySocketId = null, mySessionId = null, isHost = false;
 let currentFilter = 'all', currentPosFilter = 'all', availablePlayers = [], draftTimerInterval = null;
 let draftGames = [], currentGameFilter = 'all';
 let lobbyState = null, amIDrafting = false, draftOrderList = [];
-
-// Initialize socket connection (called after Firebase auth)
-function initializeSocket() {
-  if (socket) return; // Already initialized
-  
-  console.log('🔌 Initializing Socket.IO connection');
-  socket = io();
-  
-  // Authenticate with server after connection
-  socket.on('connect', () => {
-    console.log('✅ Socket connected:', socket.id);
-    
-    if (currentUser) {
-      // Send Firebase UID to server
-      socket.emit('authenticate', {
-        uid: currentUser.uid,
-        displayName: currentUser.displayName,
-        photoURL: currentUser.photoURL
-      });
-    } else {
-      // Fallback to old session system
-      socket.emit('authenticate', {
-        uid: null,
-        sessionId: mySessionId
-      });
-    }
-  });
-  
-  socket.on('authenticated', ({ uid }) => {
-    console.log('✅ Authenticated with server:', uid);
-  });
-  
-  socket.on('authError', ({ message }) => {
-    console.error('❌ Authentication error:', message);
-    alert('Please sign in to continue');
-  });
-  
-  // Set up all other socket listeners
-  setupSocketListeners();
-}
+let socketAuthenticated = false;
 
 // Session management - persists across refreshes AND tab closes  
 function getSessionId() {
@@ -55,6 +16,38 @@ function getSessionId() {
   return sid;
 }
 mySessionId = getSessionId();
+
+// Authenticate socket when currentUser is available (called from auth.js)
+function authenticateSocket() {
+  if (socketAuthenticated) return;
+  
+  console.log('🔐 Authenticating socket with Firebase UID');
+  
+  if (currentUser) {
+    socket.emit('authenticate', {
+      uid: currentUser.uid,
+      displayName: currentUser.displayName,
+      photoURL: currentUser.photoURL
+    });
+  } else {
+    // Fallback to session ID
+    socket.emit('authenticate', {
+      sessionId: mySessionId
+    });
+  }
+  
+  socketAuthenticated = true;
+}
+
+// Socket authentication response
+socket.on('authenticated', ({ uid }) => {
+  console.log('✅ Authenticated with server:', uid);
+});
+
+socket.on('authError', ({ message }) => {
+  console.error('❌ Authentication error:', message);
+  socketAuthenticated = false;
+});
 
 // Active game state persistence
 // Multi-game storage (supports 3-4 simultaneous games)
@@ -219,6 +212,11 @@ function abandonGame(lobbyId) {
 
 socket.on('connect', () => {
   mySocketId = socket.id;
+  console.log('🔌 Socket connected:', socket.id);
+  
+  // Authenticate with Firebase UID or session ID
+  authenticateSocket();
+  
   const params = new URLSearchParams(window.location.search);
   const joinCode = params.get('join');
   if (joinCode) {
@@ -232,7 +230,7 @@ socket.on('connect', () => {
   }
   const ag = getActiveGame();
   if (ag && mySessionId) {
-    socket.emit('rejoin', { sessionId: mySessionId });
+    socket.emit('rejoin', { sessionId: mySessionId, uid: currentUser?.uid });
   }
   renderActiveGameBanner();
 });

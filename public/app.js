@@ -437,7 +437,92 @@ function setGameDate(iso, btn) {
   lobbySettings.gameDate = iso;
   document.querySelectorAll('#gameDateControl .seg-btn').forEach(b => b.className = 'seg-btn');
   btn.classList.add('seg-active');
+  
+  // Check which leagues have games on this date and update UI
+  updateLeagueAvailability(iso);
+  
   onSettingsChanged();
+}
+
+// Check which leagues have games and disable unavailable ones
+async function updateLeagueAvailability(dateISO) {
+  try {
+    // Fetch games for selected date
+    const response = await fetch(`/api/games?date=${dateISO}`);
+    const games = await response.json();
+    
+    const hasNBA = games.some(g => g.league === 'nba');
+    const hasNHL = games.some(g => g.league === 'nhl');
+    
+    console.log(`📅 ${dateISO}: NBA games: ${hasNBA}, NHL games: ${hasNHL}`);
+    
+    // Get league buttons
+    const nbaBtn = document.querySelector('#leagueControl button[onclick*="nba"]');
+    const nhlBtn = document.querySelector('#leagueControl button[onclick*="nhl"]');
+    const bothBtn = document.querySelector('#leagueControl button[onclick*="both"]');
+    
+    // Disable/enable buttons based on available games
+    if (!hasNBA) {
+      nbaBtn.disabled = true;
+      nbaBtn.classList.add('seg-btn-disabled');
+      nbaBtn.title = 'No NBA games on this date';
+    } else {
+      nbaBtn.disabled = false;
+      nbaBtn.classList.remove('seg-btn-disabled');
+      nbaBtn.title = '';
+    }
+    
+    if (!hasNHL) {
+      nhlBtn.disabled = true;
+      nhlBtn.classList.add('seg-btn-disabled');
+      nhlBtn.title = 'No NHL games on this date';
+    } else {
+      nhlBtn.disabled = false;
+      nhlBtn.classList.remove('seg-btn-disabled');
+      nhlBtn.title = '';
+    }
+    
+    if (!hasNBA || !hasNHL) {
+      bothBtn.disabled = true;
+      bothBtn.classList.add('seg-btn-disabled');
+      bothBtn.title = !hasNBA && !hasNHL ? 'No games on this date' : 
+                      !hasNBA ? 'No NBA games on this date' : 'No NHL games on this date';
+    } else {
+      bothBtn.disabled = false;
+      bothBtn.classList.remove('seg-btn-disabled');
+      bothBtn.title = '';
+    }
+    
+    // Auto-adjust selection if current choice is unavailable
+    if (lobbySettings.leagues === 'nba' && !hasNBA) {
+      if (hasNHL) {
+        setLeague('nhl', nhlBtn);
+        showToast('Switched to NHL (no NBA games today)');
+      } else {
+        showToast('No games available for this date!', true);
+      }
+    } else if (lobbySettings.leagues === 'nhl' && !hasNHL) {
+      if (hasNBA) {
+        setLeague('nba', nbaBtn);
+        showToast('Switched to NBA (no NHL games today)');
+      } else {
+        showToast('No games available for this date!', true);
+      }
+    } else if (lobbySettings.leagues === 'both' && (!hasNBA || !hasNHL)) {
+      if (hasNBA) {
+        setLeague('nba', nbaBtn);
+        showToast('Switched to NBA only (no NHL games today)');
+      } else if (hasNHL) {
+        setLeague('nhl', nhlBtn);
+        showToast('Switched to NHL only (no NBA games today)');
+      } else {
+        showToast('No games available for this date!', true);
+      }
+    }
+    
+  } catch (err) {
+    console.error('Error checking league availability:', err);
+  }
 }
 
 function getTotalSlots() {
@@ -710,6 +795,10 @@ socket.on('lobbyCreated', ({ lobbyId, lobby }) => {
   syncSettingsUI();
   updateSettingsSummary();
   buildLobbyDatePicker();
+  
+  // Check which leagues have games and disable unavailable ones
+  updateLeagueAvailability(lobbySettings.gameDate);
+  
   renderLobbyPlayers(lobby);
 });
 

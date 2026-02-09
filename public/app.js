@@ -410,7 +410,14 @@ function selectHomeDate(iso, btn) {
 function buildLobbyDatePicker() {
   const opts = getDateOptions();
   const c = document.getElementById('gameDateControl');
-  const currentDate = lobbySettings.gameDate || opts[0].iso;
+  
+  // Initialize gameDate to today if not set
+  if (!lobbySettings.gameDate) {
+    lobbySettings.gameDate = opts[0].iso;
+    console.log(`📅 Initialized gameDate to: ${lobbySettings.gameDate}`);
+  }
+  
+  const currentDate = lobbySettings.gameDate;
   c.innerHTML = opts.map(o => `
     <button class="seg-btn ${o.iso === currentDate ? 'seg-active' : ''}" onclick="setGameDate('${o.iso}', this)">${o.label}</button>
   `).join('');

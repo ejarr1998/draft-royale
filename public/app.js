@@ -439,15 +439,17 @@ async function updateLeagueAvailability(dateISO) {
     
     console.log(`📅 ${dateISO}: NBA=${hasNBA}, NHL=${hasNHL}`);
     
-    // Get league buttons
-    const nbaBtn = document.querySelector('#leagueControl button[onclick*="\'nba\'"]');
-    const nhlBtn = document.querySelector('#leagueControl button[onclick*="\'nhl\'"]');
-    const bothBtn = document.querySelector('#leagueControl button[onclick*="\'both\'"]');
+    // Get league buttons - match the actual onclick format
+    const nbaBtn = document.querySelector('#leagueControl button[onclick*="nba"]');
+    const nhlBtn = document.querySelector('#leagueControl button[onclick*="nhl"]');
+    const bothBtn = document.querySelector('#leagueControl button[onclick*="both"]');
     
     if (!nbaBtn || !nhlBtn || !bothBtn) {
-      console.warn('League buttons not found, skipping update');
+      console.warn('⚠️ League buttons not found!', { nbaBtn: !!nbaBtn, nhlBtn: !!nhlBtn, bothBtn: !!bothBtn });
       return;
     }
+    
+    console.log('✅ Found all league buttons');
     
     // Update button states
     if (!hasNBA) {

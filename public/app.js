@@ -571,6 +571,17 @@ function updateRosterUI() {
   const lg = s.leagues;
   const controls = document.getElementById('rosterControls');
 
+  // When switching to single league, set unused league to 0
+  if (lg === 'nba' && s.rosterSlots.nhl !== 0) {
+    s.rosterSlots.nhl = 0;
+  } else if (lg === 'nhl' && s.rosterSlots.nba !== 0) {
+    s.rosterSlots.nba = 0;
+  } else if (lg === 'both') {
+    // When switching to both, restore defaults if they're 0
+    if (s.rosterSlots.nba === 0) s.rosterSlots.nba = 4;
+    if (s.rosterSlots.nhl === 0) s.rosterSlots.nhl = 2;
+  }
+
   document.getElementById('nbaSlotsVal').textContent = s.rosterSlots.nba;
   document.getElementById('nhlSlotsVal').textContent = s.rosterSlots.nhl;
   document.getElementById('totalSlotsVal').textContent = getTotalSlots();

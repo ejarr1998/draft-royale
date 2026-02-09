@@ -6,9 +6,8 @@ let currentUser = null;
 let currentFilter = 'all';
 let games = {};
 
-// Initialize Firebase
-const db = firebase.firestore();
-const auth = firebase.auth();
+// Firebase already initialized in firebase-config.js
+// db, auth, firebase are already available globally
 
 // Wait for auth, then load games
 auth.onAuthStateChanged(async (user) => {

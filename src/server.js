@@ -1409,6 +1409,9 @@ async function updateLiveScores(lobbyId) {
     clearInterval(lobby.scoreInterval);
     lobby.scoreInterval = null;
     console.log(`🏁 Lobby ${lobbyId}: All games finished`);
+    
+    // Update phase to 'finished' in all players' activeGames
+    updateActiveGamesPhase(lobby, 'finished');
   }
   
   console.log(`📊 Broadcasting scoreUpdate to lobby ${lobbyId}:`, {
@@ -1519,12 +1522,62 @@ async function saveLobbyToFirestore(lobby) {
   if (!firestoreDb) return;
   
   try {
-    await firestoreDb.collection('lobbies').doc(lobby.id).set({
-      ...lobby,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+    // Serialize lobby data (remove functions and circular refs)
+    const lobbyData = {
+      id: lobby.id,
+      host: lobby.host,
+      hostName: lobby.hostName,
+      state: lobby.state,
+      maxPlayers: lobby.maxPlayers,
+      isPublic: lobby.isPublic,
+      settings: lobby.settings,
+      createdAt: lobby.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      players: lobby.players.map(p => ({
+        id: p.id,
+        uid: p.uid,
+        name: p.name,
+        photoURL: p.photoURL,
+        roster: p.roster || [],
+        totalScore: p.totalScore || 0,
+        isHost: p.isHost || false
+      })),
+      draftOrder: lobby.draftOrder || [],
+      currentPick: lobby.currentPick || 0,
+      gameDate: lobby.gameDate || null
+    };
+    
+    await firestoreDb.collection('lobbies').doc(lobby.id).set(lobbyData, { merge: true });
+    console.log(`💾 Saved lobby ${lobby.id} to Firestore (state: ${lobby.state})`);
   } catch (err) {
-    console.error(`Error saving lobby ${lobby.id} to Firestore:`, err);
+    console.error(`❌ Error saving lobby ${lobby.id} to Firestore:`, err.message);
+  }
+}
+
+// Update phase in all players' activeGames
+async function updateActiveGamesPhase(lobby, phase) {
+  if (!firestoreDb) return;
+  
+  for (const player of lobby.players) {
+    if (player.uid) {
+      try {
+        const userRef = firestoreDb.collection('users').doc(player.uid);
+        const userDoc = await userRef.get();
+        
+        if (userDoc.exists) {
+          const activeGames = userDoc.data().activeGames || [];
+          const gameIndex = activeGames.findIndex(g => g.lobbyId === lobby.id);
+          
+          if (gameIndex !== -1) {
+            activeGames[gameIndex].phase = phase;
+            activeGames[gameIndex].lastUpdated = new Date();
+            await userRef.update({ activeGames });
+          }
+        }
+      } catch (err) {
+        console.error(`Error updating phase for user ${player.uid}:`, err.message);
+      }
+    }
   }
 }
 
@@ -1639,14 +1692,24 @@ io.on('connection', (socket) => {
       }).then(() => {
         console.log(`💾 Lobby ${lobby.id} saved to Firestore`);
         
-        // Add to user's active games
+        // Add to user's active games with proper structure
         if (socket.uid) {
-          return firestoreDb.collection('users').doc(socket.uid).update({
-            activeGames: admin.firestore.FieldValue.arrayUnion(lobby.id)
+          return firestoreDb.collection('users').doc(socket.uid).get().then(userDoc => {
+            const activeGames = userDoc.exists ? (userDoc.data().activeGames || []) : [];
+            
+            // Add new game
+            activeGames.push({
+              lobbyId: lobby.id,
+              phase: 'waiting',
+              playerName: safeName,
+              lastUpdated: new Date()
+            });
+            
+            return firestoreDb.collection('users').doc(socket.uid).update({ activeGames });
           });
         }
       }).catch(err => {
-        console.error('Error saving lobby to Firestore:', err);
+        console.error('Error saving lobby to Firestore:', err.message);
       });
     }
     
@@ -1964,7 +2027,10 @@ io.on('connection', (socket) => {
     }
     
     lobby.state = 'drafting';
-    const { draftType, timePerPick, leagues, gameDate } = lobby.settings;
+    const { draftType, timePerPick, leagues, gameDate} = lobby.settings;
+    
+    // Update phase in all players' activeGames
+    updateActiveGamesPhase(lobby, 'drafting');
     
     console.log(`   Applied settings - leagues: ${leagues}, gameDate: ${gameDate}`);
     
@@ -2149,12 +2215,17 @@ io.on('connection', (socket) => {
     // Remove this lobby from the player's activeGames in Firestore
     if (playerUid && firestoreDb) {
       try {
-        await firestoreDb.collection('users').doc(playerUid).update({
-          activeGames: admin.firestore.FieldValue.arrayRemove(lobbyId)
-        });
-        console.log(`✅ Removed lobby ${lobbyId} from ${player.name}'s active games`);
+        const userRef = firestoreDb.collection('users').doc(playerUid);
+        const userDoc = await userRef.get();
+        
+        if (userDoc.exists) {
+          const activeGames = userDoc.data().activeGames || [];
+          const updatedGames = activeGames.filter(g => g.lobbyId !== lobbyId);
+          await userRef.update({ activeGames: updatedGames });
+          console.log(`✅ Removed lobby ${lobbyId} from ${player.name}'s active games`);
+        }
       } catch (err) {
-        console.error(`Error removing lobby from user ${playerUid}:`, err);
+        console.error(`Error removing lobby from user ${playerUid}:`, err.message);
       }
     }
     
@@ -2316,6 +2387,9 @@ function startDraftTimer(lobby) {
 
 function endDraft(lobby) {
   lobby.state = 'live';
+  
+  // Update phase in all players' activeGames
+  updateActiveGamesPhase(lobby, 'live');
   
   if (lobby.draftTimer) {
     clearTimeout(lobby.draftTimer);

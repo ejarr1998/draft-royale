@@ -69,7 +69,13 @@
 
     <!-- HOME -->
     <div class="screen" id="homeScreen">
-      <div id="activeGameBanner" class="active-game-banner-hidden"></div>
+      <div class="home-header">
+        <button class="my-games-btn" onclick="goToMyGames()" id="myGamesBtn" style="display: none;">
+          <span class="my-games-icon">🎮</span>
+          <span class="my-games-text">My Games</span>
+          <span class="my-games-badge" id="myGamesBadge">0</span>
+        </button>
+      </div>
       <div class="hero">
         <div class="hero-badge">Season Live</div>
         <h1>DRAFT <span class="accent">ROYALE</span></h1>

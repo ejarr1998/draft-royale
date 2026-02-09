@@ -1570,9 +1570,8 @@ io.on('connection', (socket) => {
       return socket.emit('error', { message: 'Please sign in first' });
     }
     
-    if (sessions[userId] && lobbies[sessions[userId].lobbyId]) {
-      return socket.emit('error', { message: 'You are already in a game' });
-    }
+    // REMOVED: Block for already being in a game - allow multiple games!
+    // Users can be in multiple lobbies simultaneously
     
     const safeName = sanitizeName(playerName);
     const lobby = createLobby(safeName, maxPlayers, isPublic, settings || {});
@@ -1684,9 +1683,7 @@ io.on('connection', (socket) => {
     const safeName = sanitizeName(playerName);
     const lobby = lobbies[code];
     
-    if (sessions[sessionId] && lobbies[sessions[sessionId].lobbyId]) {
-      return socket.emit('error', { message: 'You are already in a game' });
-    }
+    // REMOVED: Block for already being in a game - allow multiple games!
     
     if (!lobby) {
       return socket.emit('error', { message: 'Lobby not found' });

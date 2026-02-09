@@ -471,14 +471,19 @@ async function updateLeagueAvailability(dateISO) {
     const hasNBA = games.some(g => g.league === 'nba');
     const hasNHL = games.some(g => g.league === 'nhl');
     
-    console.log(`📅 ${dateISO}: NBA games: ${hasNBA}, NHL games: ${hasNHL}`);
+    console.log(`📅 ${dateISO}: NBA=${hasNBA}, NHL=${hasNHL}`);
     
     // Get league buttons
-    const nbaBtn = document.querySelector('#leagueControl button[onclick*="nba"]');
-    const nhlBtn = document.querySelector('#leagueControl button[onclick*="nhl"]');
-    const bothBtn = document.querySelector('#leagueControl button[onclick*="both"]');
+    const nbaBtn = document.querySelector('#leagueControl button[onclick*="\'nba\'"]');
+    const nhlBtn = document.querySelector('#leagueControl button[onclick*="\'nhl\'"]');
+    const bothBtn = document.querySelector('#leagueControl button[onclick*="\'both\'"]');
     
-    // Disable/enable buttons based on available games
+    if (!nbaBtn || !nhlBtn || !bothBtn) {
+      console.warn('League buttons not found, skipping update');
+      return;
+    }
+    
+    // Update button states
     if (!hasNBA) {
       nbaBtn.disabled = true;
       nbaBtn.classList.add('seg-btn-disabled');
@@ -499,7 +504,7 @@ async function updateLeagueAvailability(dateISO) {
       nhlBtn.title = '';
     }
     
-    // Disable "Both" if either league is missing - only allow when both have games
+    // "Both" only enabled when BOTH leagues have games
     if (!hasNBA || !hasNHL) {
       bothBtn.disabled = true;
       bothBtn.classList.add('seg-btn-disabled');
@@ -511,32 +516,28 @@ async function updateLeagueAvailability(dateISO) {
       bothBtn.title = '';
     }
     
-    // Auto-switch to available league if current selection is unavailable
-    if (lobbySettings.leagues === 'nba' && !hasNBA) {
-      if (hasNHL) {
-        setLeague('nhl', nhlBtn);
-        showToast('Switched to NHL (no NBA games today)');
-      } else {
-        showToast('No games available for this date!', true);
-      }
-    } else if (lobbySettings.leagues === 'nhl' && !hasNHL) {
-      if (hasNBA) {
-        setLeague('nba', nbaBtn);
-        showToast('Switched to NBA (no NHL games today)');
-      } else {
-        showToast('No games available for this date!', true);
-      }
-    } else if (lobbySettings.leagues === 'both' && (!hasNBA || !hasNHL)) {
-      // Auto-switch from "Both" to whichever league has games
-      if (hasNBA) {
-        setLeague('nba', nbaBtn);
-        console.log('📅 Auto-switched to NBA (no NHL games today)');
-      } else if (hasNHL) {
-        setLeague('nhl', nhlBtn);
-        console.log('📅 Auto-switched to NHL (no NBA games today)');
-      } else {
-        showToast('No games available for this date!', true);
-      }
+    // ALWAYS auto-select available league if needed
+    const currentSelection = lobbySettings.leagues;
+    
+    // If no games at all, show error
+    if (!hasNBA && !hasNHL) {
+      showToast('No games available for this date!', true);
+      return;
+    }
+    
+    // Auto-switch logic
+    if (currentSelection === 'nba' && !hasNBA && hasNHL) {
+      setLeague('nhl', nhlBtn);
+      console.log('📅 Auto-switched: NBA→NHL');
+    } else if (currentSelection === 'nhl' && !hasNHL && hasNBA) {
+      setLeague('nba', nbaBtn);
+      console.log('📅 Auto-switched: NHL→NBA');
+    } else if (currentSelection === 'both' && !hasNBA && hasNHL) {
+      setLeague('nhl', nhlBtn);
+      console.log('📅 Auto-switched: Both→NHL');
+    } else if (currentSelection === 'both' && hasNBA && !hasNHL) {
+      setLeague('nba', nbaBtn);
+      console.log('📅 Auto-switched: Both→NBA');
     }
     
   } catch (err) {

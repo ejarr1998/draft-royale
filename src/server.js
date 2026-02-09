@@ -1547,8 +1547,10 @@ async function saveLobbyToFirestore(lobby) {
       gameDate: lobby.gameDate || null
     };
     
+    console.log(`💾 Saving lobby ${lobby.id} with rosterSlots:`, lobbyData.settings?.rosterSlots);
+    
     await firestoreDb.collection('lobbies').doc(lobby.id).set(lobbyData, { merge: true });
-    console.log(`💾 Saved lobby ${lobby.id} to Firestore (state: ${lobby.state})`);
+    console.log(`✅ Saved lobby ${lobby.id} to Firestore (state: ${lobby.state})`);
   } catch (err) {
     console.error(`❌ Error saving lobby ${lobby.id} to Firestore:`, err.message);
   }
@@ -2000,6 +2002,8 @@ io.on('connection', (socket) => {
     
     // ⭐ APPLY SETTINGS FROM CLIENT ⭐
     if (settings) {
+      console.log(`   Received rosterSlots:`, settings.rosterSlots);
+      
       lobby.settings = {
         draftType: settings.draftType || 'snake',
         timePerPick: Math.min(120, Math.max(10, settings.timePerPick || 30)),
@@ -2010,6 +2014,8 @@ io.on('connection', (socket) => {
         leagues: settings.leagues || 'both',
         gameDate: settings.gameDate || null
       };
+      
+      console.log(`   Applied rosterSlots:`, lobby.settings.rosterSlots);
       // Also update lobby-level properties
       if (settings.maxPlayers !== undefined) {
         lobby.maxPlayers = Math.min(8, Math.max(1, settings.maxPlayers));

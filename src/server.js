@@ -1465,11 +1465,22 @@ async function warmupCache() {
 // ============================================
 // Filters out players from leagues where the drafter's roster is full
 function sendPersonalizedPlayerPool(lobby, drafterId) {
+  console.log(`📤 Sending personalized pool to drafter: ${drafterId}`);
+  
   const drafter = lobby.players.find(p => p.id === drafterId);
-  if (!drafter) return;
+  if (!drafter) {
+    console.log(`   ❌ Drafter not found in lobby.players`);
+    return;
+  }
   
   const session = sessions[drafterId];
-  if (!session || !session.socketId) return;
+  if (!session || !session.socketId) {
+    console.log(`   ❌ Session not found for drafterId: ${drafterId}`);
+    console.log(`   Available sessions:`, Object.keys(sessions));
+    return;
+  }
+  
+  console.log(`   ✅ Found drafter: ${drafter.name}, socket: ${session.socketId}`);
   
   const slots = lobby.settings.rosterSlots || { nba: 10, nhl: 10 };
   const nbaCount = (drafter.roster || []).filter(r => r.league === 'nba').length;
@@ -1477,6 +1488,8 @@ function sendPersonalizedPlayerPool(lobby, drafterId) {
   
   const nbaFull = nbaCount >= (slots.nba || 0);
   const nhlFull = nhlCount >= (slots.nhl || 0);
+  
+  console.log(`   NBA: ${nbaCount}/${slots.nba} (full: ${nbaFull}), NHL: ${nhlCount}/${slots.nhl} (full: ${nhlFull})`);
   
   // Filter out players from full leagues
   let filteredPlayers = lobby.availablePlayers;
@@ -1488,11 +1501,15 @@ function sendPersonalizedPlayerPool(lobby, drafterId) {
     });
   }
   
+  console.log(`   Filtered players: ${filteredPlayers.length} / ${lobby.availablePlayers.length}`);
+  
   // Send personalized pool to this specific drafter
   io.to(session.socketId).emit('personalizedPlayerPool', {
     availablePlayers: filteredPlayers,
     fullLeagues: { nba: nbaFull, nhl: nhlFull }
   });
+  
+  console.log(`   ✅ Sent personalized pool`);
 }
 
 // ============================================

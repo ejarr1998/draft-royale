@@ -12,50 +12,103 @@ const auth = firebase.auth();
 
 // Wait for auth, then load games
 auth.onAuthStateChanged(async (user) => {
+  console.log('🔐 Auth state changed:', user ? user.uid : 'no user');
+  
   if (user) {
     currentUser = user;
     mySessionId = user.uid;
-    console.log('✅ Authenticated as:', user.displayName);
-    await loadGames();
+    console.log('✅ Authenticated as:', user.displayName, user.uid);
+    
+    // TEST: Direct query to see what's in Firestore
+    console.log('🧪 TEST: Querying Firestore directly...');
+    try {
+      const testDoc = await db.collection('users').doc(user.uid).get();
+      console.log('   User doc exists?', testDoc.exists);
+      if (testDoc.exists) {
+        const data = testDoc.data();
+        console.log('   Full user data:', data);
+        console.log('   activeGames field:', data.activeGames);
+        console.log('   activeGames type:', typeof data.activeGames);
+        console.log('   activeGames isArray:', Array.isArray(data.activeGames));
+      }
+    } catch (err) {
+      console.error('   ❌ Test query failed:', err);
+    }
+    
+    console.log('   Calling loadGames()...');
+    
+    try {
+      await loadGames();
+      console.log('   ✅ loadGames() completed');
+    } catch (err) {
+      console.error('   ❌ loadGames() failed:', err);
+    }
   } else {
     console.log('❌ Not authenticated, redirecting to home...');
-    window.location.href = '/';
+    setTimeout(() => {
+      window.location.href = '/';
+    }, 1000);
   }
 });
 
 // Load games from Firestore (database)
 async function loadGames() {
+  console.log('📡 loadGames() called');
+  console.log('   currentUser:', currentUser ? currentUser.uid : 'null');
+  
   if (!currentUser) {
-    console.warn('No user, cannot load games');
+    console.warn('   ⚠️ No user, cannot load games');
     games = {};
     renderGames();
     return;
   }
   
   try {
-    console.log(`📡 Loading games from Firestore for user ${currentUser.uid}...`);
+    console.log(`   Fetching user document from Firestore...`);
     
-    const userDoc = await db.collection('users').doc(currentUser.uid).get();
-    const activeGamesArray = userDoc.data()?.activeGames || [];
+    const userRef = db.collection('users').doc(currentUser.uid);
+    console.log('   User ref:', userRef.path);
     
-    console.log(`📂 Found ${activeGamesArray.length} games in Firestore:`, activeGamesArray);
+    const userDoc = await userRef.get();
+    console.log('   User doc exists?', userDoc.exists);
+    
+    if (!userDoc.exists) {
+      console.warn('   ⚠️ User document does not exist in Firestore');
+      games = {};
+      renderGames();
+      return;
+    }
+    
+    const userData = userDoc.data();
+    console.log('   User data:', userData);
+    
+    const activeGamesArray = userData?.activeGames || [];
+    console.log(`   📂 Found ${activeGamesArray.length} games in Firestore`);
+    console.log('   Games:', activeGamesArray);
     
     // Convert array to object format for rendering
     games = {};
     for (const game of activeGamesArray) {
+      if (!game || !game.lobbyId) {
+        console.warn('   ⚠️ Invalid game object:', game);
+        continue;
+      }
+      
       games[game.lobbyId] = {
         lobbyId: game.lobbyId,
-        phase: game.phase,
-        playerName: game.playerName,
+        phase: game.phase || 'waiting',
+        playerName: game.playerName || 'Unknown',
         lastUpdated: game.lastUpdated
       };
     }
     
-    console.log(`✅ Loaded ${Object.keys(games).length} games`);
+    console.log(`   ✅ Converted to ${Object.keys(games).length} games`);
+    console.log('   Games object:', games);
     
     renderGames();
   } catch (err) {
-    console.error('❌ Error loading games from Firestore:', err);
+    console.error('   ❌ Error loading games from Firestore:', err);
+    console.error('   Error details:', err.message, err.stack);
     games = {};
     renderGames();
   }

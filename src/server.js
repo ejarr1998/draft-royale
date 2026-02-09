@@ -252,10 +252,16 @@ setupGracefulShutdown();
 setInterval(saveCacheToDisk, CACHE_PERSIST_INTERVAL);
 
 // Rate-limited fetch helper with retries
-async function fetchWithRetry(url, { maxRetries = 2, baseDelay = 800, label = '' } = {}) {
+async function fetchWithRetry(url, { maxRetries = 2, baseDelay = 800, label = '', timeout = 10000 } = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const res = await fetch(url);
+      // Create abort controller for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      
       if (res.status === 429) {
         const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 200;
         if (attempt < maxRetries) {
@@ -275,6 +281,9 @@ async function fetchWithRetry(url, { maxRetries = 2, baseDelay = 800, label = ''
       }
       return await res.json();
     } catch (e) {
+      if (e.name === 'AbortError') {
+        console.error(`Fetch timeout${label ? ` (${label})` : ''} after ${timeout}ms`);
+      }
       if (attempt < maxRetries) {
         await new Promise(r => setTimeout(r, baseDelay));
         continue;

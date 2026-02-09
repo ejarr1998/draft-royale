@@ -2003,13 +2003,17 @@ io.on('connection', (socket) => {
     // ⭐ APPLY SETTINGS FROM CLIENT ⭐
     if (settings) {
       console.log(`   Received rosterSlots:`, settings.rosterSlots);
+      console.log(`   Received leagues:`, settings.leagues);
+      
+      // Use client-provided rosterSlots directly
+      const rosterSlots = settings.rosterSlots || { nba: 4, nhl: 2 };
       
       lobby.settings = {
         draftType: settings.draftType || 'snake',
         timePerPick: Math.min(120, Math.max(10, settings.timePerPick || 30)),
         rosterSlots: {
-          nba: Math.min(10, Math.max(0, settings.rosterSlots?.nba || 4)),
-          nhl: Math.min(10, Math.max(0, settings.rosterSlots?.nhl || 2))
+          nba: Math.min(10, Math.max(0, rosterSlots.nba || 0)),
+          nhl: Math.min(10, Math.max(0, rosterSlots.nhl || 0))
         },
         leagues: settings.leagues || 'both',
         gameDate: settings.gameDate || null

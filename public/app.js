@@ -744,7 +744,28 @@ function shareLobby() {
   }
 }
 function startDraft() {
+  console.log('🎯 CLIENT: startDraft() called');
+  console.log('   Socket connected:', socket.connected);
+  console.log('   myLobbyId:', myLobbyId);
+  console.log('   isHost:', isHost);
+  console.log('   lobbySettings:', lobbySettings);
+  
+  if (!socket.connected) {
+    console.error('❌ Socket not connected!');
+    alert('Not connected to server. Please refresh.');
+    return;
+  }
+  
+  if (!isHost) {
+    console.error('❌ Not the host!');
+    alert('Only the host can start the draft.');
+    return;
+  }
+  
   showDraftLoading('Fetching games & players...');
+  
+  console.log('🔌 CLIENT: Emitting startDraft to server...');
+  
   // ── Send ALL settings to the server now, at draft time ──
   socket.emit('startDraft', {
     settings: {
@@ -756,6 +777,11 @@ function startDraft() {
       maxPlayers: lobbySettings.maxPlayers,
       isPublic: lobbySettings.isPublic
     }
+  });
+  
+  console.log('✅ CLIENT: startDraft emitted with settings:', {
+    leagues: lobbySettings.leagues,
+    gameDate: lobbySettings.gameDate
   });
 }
 

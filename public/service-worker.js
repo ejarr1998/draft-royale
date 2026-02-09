@@ -1,4 +1,4 @@
-const CACHE_NAME = 'draft-royale-v1';
+const CACHE_NAME = 'draft-royale-v3';
 const RUNTIME_CACHE = 'draft-royale-runtime';
 
 // Files to cache immediately on install

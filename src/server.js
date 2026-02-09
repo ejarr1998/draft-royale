@@ -1448,8 +1448,13 @@ async function warmupCache() {
   console.log('🔥 Warming up cache with today\'s games...');
   try {
     const todayISO = getTodayISO();
-    await getOrBuildEnrichedPlayerPool(todayISO, 'both');
-    console.log('✅ Cache warmup complete');
+    // Warm up all three league combinations to avoid cache misses
+    await Promise.all([
+      getOrBuildEnrichedPlayerPool(todayISO, 'both'),
+      getOrBuildEnrichedPlayerPool(todayISO, 'nba'),
+      getOrBuildEnrichedPlayerPool(todayISO, 'nhl')
+    ]);
+    console.log('✅ Cache warmup complete (both, nba, nhl)');
   } catch (err) {
     console.error('❌ Cache warmup failed:', err.message);
   }

@@ -2,22 +2,63 @@
 const socket = io();
 
 let mySessionId = localStorage.getItem('dr_sessionId') || '';
+let currentUser = null;
 let currentFilter = 'all';
 let games = {};
 
-// Initialize
-loadGames();
+// Initialize Firebase
+const db = firebase.firestore();
+const auth = firebase.auth();
 
-// Get active games from localStorage
-function getActiveGames() {
-  const stored = localStorage.getItem('dr_activeGames');
-  return stored ? JSON.parse(stored) : {};
-}
+// Wait for auth, then load games
+auth.onAuthStateChanged(async (user) => {
+  if (user) {
+    currentUser = user;
+    mySessionId = user.uid;
+    console.log('✅ Authenticated as:', user.displayName);
+    await loadGames();
+  } else {
+    console.log('❌ Not authenticated, redirecting to home...');
+    window.location.href = '/';
+  }
+});
 
-// Load games
-function loadGames() {
-  games = getActiveGames();
-  renderGames();
+// Load games from Firestore (database)
+async function loadGames() {
+  if (!currentUser) {
+    console.warn('No user, cannot load games');
+    games = {};
+    renderGames();
+    return;
+  }
+  
+  try {
+    console.log(`📡 Loading games from Firestore for user ${currentUser.uid}...`);
+    
+    const userDoc = await db.collection('users').doc(currentUser.uid).get();
+    const activeGamesArray = userDoc.data()?.activeGames || [];
+    
+    console.log(`📂 Found ${activeGamesArray.length} games in Firestore:`, activeGamesArray);
+    
+    // Convert array to object format for rendering
+    games = {};
+    for (const game of activeGamesArray) {
+      games[game.lobbyId] = {
+        lobbyId: game.lobbyId,
+        phase: game.phase,
+        playerName: game.playerName,
+        lastUpdated: game.lastUpdated
+      };
+    }
+    
+    console.log(`✅ Loaded ${Object.keys(games).length} games`);
+    
+    renderGames();
+  } catch (err) {
+    console.error('❌ Error loading games from Firestore:', err);
+    games = {};
+    renderGames();
+  }
 }
 
 // Render games list
@@ -26,12 +67,16 @@ function renderGames() {
   const emptyState = document.getElementById('emptyState');
   const gameArray = Object.values(games);
   
+  console.log(`🎮 Rendering ${gameArray.length} games:`, gameArray);
+  
   // Update counts
   const allCount = gameArray.length;
   const liveCount = gameArray.filter(g => g.phase === 'live').length;
   const draftingCount = gameArray.filter(g => g.phase === 'drafting').length;
   const waitingCount = gameArray.filter(g => g.phase === 'waiting').length;
   const finishedCount = gameArray.filter(g => g.phase === 'finished').length;
+  
+  console.log(`   Phase counts: Live=${liveCount}, Drafting=${draftingCount}, Waiting=${waitingCount}, Finished=${finishedCount}`);
   
   document.getElementById('countAll').textContent = allCount;
   document.getElementById('countLive').textContent = liveCount;
@@ -66,8 +111,18 @@ function renderGames() {
     
     const secondaryBtnText = game.phase === 'finished' ? 'Delete' : 'Leave';
     
-    // Time info
-    const lastUpdated = game.lastUpdated ? new Date(game.lastUpdated) : null;
+    // Time info - handle various timestamp formats
+    let lastUpdated = null;
+    if (game.lastUpdated) {
+      if (typeof game.lastUpdated === 'number') {
+        lastUpdated = new Date(game.lastUpdated);
+      } else if (game.lastUpdated.toDate) {
+        // Firestore Timestamp
+        lastUpdated = game.lastUpdated.toDate();
+      } else if (game.lastUpdated instanceof Date) {
+        lastUpdated = game.lastUpdated;
+      }
+    }
     const timeAgo = lastUpdated ? getTimeAgo(lastUpdated) : '';
     
     return `
@@ -95,7 +150,6 @@ function renderGames() {
         </div>
       </div>
     `;
-  }).join('');
   }).join('');
   
   // Apply filter
@@ -145,7 +199,7 @@ function rejoinGame(lobbyId) {
 }
 
 // Leave or delete game
-function leaveGame(lobbyId, isFinished = false) {
+async function leaveGame(lobbyId, isFinished = false) {
   const action = isFinished ? 'delete' : 'leave';
   const message = isFinished 
     ? 'Delete this finished game? You can no longer view the results.' 
@@ -155,17 +209,32 @@ function leaveGame(lobbyId, isFinished = false) {
     return;
   }
   
-  // Remove from localStorage
-  delete games[lobbyId];
-  localStorage.setItem('dr_activeGames', JSON.stringify(games));
-  
-  // Emit leave event to server (removes from Firestore)
-  socket.emit('leaveGame', { lobbyId, sessionId: mySessionId });
-  
-  console.log(`${isFinished ? '🗑️ Deleted' : '👋 Left'} game ${lobbyId}`);
-  
-  // Re-render
-  renderGames();
+  try {
+    // Remove from Firestore
+    if (currentUser) {
+      const userRef = db.collection('users').doc(currentUser.uid);
+      const userDoc = await userRef.get();
+      
+      if (userDoc.exists) {
+        const activeGames = userDoc.data().activeGames || [];
+        const updatedGames = activeGames.filter(g => g.lobbyId !== lobbyId);
+        await userRef.update({ activeGames: updatedGames });
+        console.log(`✅ Removed ${lobbyId} from Firestore`);
+      }
+    }
+    
+    // Emit leave event to server (removes from lobby)
+    socket.emit('leaveGame', { lobbyId, sessionId: mySessionId });
+    
+    console.log(`${isFinished ? '🗑️ Deleted' : '👋 Left'} game ${lobbyId}`);
+    
+    // Reload games from Firestore
+    await loadGames();
+    
+  } catch (err) {
+    console.error('Error leaving game:', err);
+    alert('Failed to leave game. Please try again.');
+  }
 }
 
 // Go home

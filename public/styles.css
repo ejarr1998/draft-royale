@@ -1906,3 +1906,53 @@ button, .player-card, .roster-player-card, .rpc-main, .rank-list-entry { touch-a
     padding: 12px 14px;
   }
 }
+
+/* My Games Button */
+.home-header {
+  padding: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.my-games-btn {
+  background: var(--card-bg);
+  border: 2px solid var(--primary);
+  color: var(--text);
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s;
+  position: relative;
+}
+
+.my-games-btn:hover {
+  background: var(--primary);
+  color: white;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(249, 115, 22, 0.3);
+}
+
+.my-games-icon {
+  font-size: 1.2rem;
+}
+
+.my-games-badge {
+  background: var(--primary);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  min-width: 20px;
+  text-align: center;
+}
+
+.my-games-btn:hover .my-games-badge {
+  background: white;
+  color: var(--primary);
+}

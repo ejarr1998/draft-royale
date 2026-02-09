@@ -67,6 +67,8 @@ function renderGames() {
                            game.phase === 'drafting' ? '▶️ Continue Draft' :
                            game.phase === 'waiting' ? '▶️ Rejoin Lobby' : '📊 View Results';
     
+    const secondaryBtnText = game.phase === 'finished' ? '🗑️ Delete' : '👋 Leave';
+    
     // Time info
     const lastUpdated = game.lastUpdated ? new Date(game.lastUpdated) : null;
     const timeAgo = lastUpdated ? getTimeAgo(lastUpdated) : '';
@@ -87,8 +89,8 @@ function renderGames() {
           <button class="game-card-btn primary" onclick="rejoinGame('${game.lobbyId}')">
             ${primaryBtnText}
           </button>
-          <button class="game-card-btn danger" onclick="leaveGame('${game.lobbyId}')">
-            Leave
+          <button class="game-card-btn danger" onclick="leaveGame('${game.lobbyId}', ${game.phase === 'finished'})">
+            ${secondaryBtnText}
           </button>
         </div>
       </div>
@@ -124,7 +126,7 @@ function applyFilter() {
   });
 }
 
-// Rejoin game
+// Rejoin or view game
 function rejoinGame(lobbyId) {
   const game = games[lobbyId];
   if (!game) {
@@ -132,17 +134,23 @@ function rejoinGame(lobbyId) {
     return;
   }
   
-  // Navigate based on phase
-  if (game.phase === 'live' || game.phase === 'finished') {
+  // For finished games, always go to live.html to view final scores
+  if (game.phase === 'finished' || game.phase === 'live') {
     window.location.href = `/live.html?lobby=${lobbyId}`;
   } else {
+    // For waiting/drafting, go to home to rejoin
     window.location.href = `/?rejoin=${lobbyId}`;
   }
 }
 
-// Leave game
-function leaveGame(lobbyId) {
-  if (!confirm('Are you sure you want to leave this game?')) {
+// Leave or delete game
+function leaveGame(lobbyId, isFinished = false) {
+  const action = isFinished ? 'delete' : 'leave';
+  const message = isFinished 
+    ? 'Delete this finished game? You can no longer view the results.' 
+    : 'Are you sure you want to leave this game?';
+  
+  if (!confirm(message)) {
     return;
   }
   
@@ -150,8 +158,10 @@ function leaveGame(lobbyId) {
   delete games[lobbyId];
   localStorage.setItem('dr_activeGames', JSON.stringify(games));
   
-  // Emit leave event to server
+  // Emit leave event to server (removes from Firestore)
   socket.emit('leaveGame', { lobbyId, sessionId: mySessionId });
+  
+  console.log(`${isFinished ? '🗑️ Deleted' : '👋 Left'} game ${lobbyId}`);
   
   // Re-render
   renderGames();

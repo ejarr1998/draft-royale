@@ -310,8 +310,15 @@ socket.on('playerReconnected', ({ playerName }) => {
 });
 
 function showScreen(id) {
+  console.log(`📺 showScreen called: ${id}`);
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
+  const targetScreen = document.getElementById(id);
+  if (!targetScreen) {
+    console.error(`❌ Screen not found: ${id}`);
+    return;
+  }
+  targetScreen.classList.add('active');
+  console.log(`✅ Screen ${id} should now be visible`);
   window.scrollTo(0, 0);
 }
 function goHome() {
@@ -911,11 +918,20 @@ socket.on('personalizedPlayerPool', ({ availablePlayers: personalizedPlayers, fu
 let pendingLivePlayers = null;
 
 socket.on('draftComplete', ({ players }) => {
+  console.log('🎉 Draft complete! Showing recap screen...');
+  console.log('Players:', players);
+  
   if (draftTimerInterval) { clearInterval(draftTimerInterval); draftTimerInterval = null; }
   pendingLivePlayers = players;
   updateActiveGamePhase('live');
+  
+  console.log('Calling showScreen(recapScreen)...');
   showScreen('recapScreen');
+  
+  console.log('Rendering recap...');
   renderRecap(players);
+  
+  console.log('✅ Recap screen should now be visible');
 });
 
 function renderRecap(players) {

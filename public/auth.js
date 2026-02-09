@@ -67,37 +67,57 @@ async function loadActiveGamesFromFirestore() {
   
   try {
     const userDoc = await db.collection('users').doc(currentUser.uid).get();
-    const activeGameIds = userDoc.data()?.activeGames || [];
+    const activeGamesArray = userDoc.data()?.activeGames || [];
     
-    console.log(`📂 Loading ${activeGameIds.length} active games from Firestore`);
+    console.log(`📂 Loading ${activeGamesArray.length} active games from Firestore`);
     
-    // Convert to old format for compatibility
+    // Convert array to object format for localStorage
     const games = {};
-    for (const lobbyId of activeGameIds) {
-      const lobbyDoc = await db.collection('lobbies').doc(lobbyId).get();
-      if (lobbyDoc.exists) {
-        const lobby = lobbyDoc.data();
-        const player = lobby.players?.find(p => p.uid === currentUser.uid);
-        if (player) {
-          games[lobbyId] = {
-            lobbyId,
-            phase: lobby.state,
-            playerName: player.name,
-            sessionId: currentUser.uid, // Use uid as sessionId
-            savedAt: lobby.updatedAt?.toMillis() || Date.now()
-          };
-        }
-      }
+    for (const game of activeGamesArray) {
+      // New format already has {lobbyId, phase, playerName, lastUpdated}
+      games[game.lobbyId] = {
+        lobbyId: game.lobbyId,
+        phase: game.phase,
+        playerName: game.playerName,
+        lastUpdated: game.lastUpdated?.toMillis ? game.lastUpdated.toMillis() : game.lastUpdated
+      };
     }
     
-    // Save to localStorage for backwards compatibility
+    console.log(`✅ Loaded games:`, Object.keys(games));
+    
+    // Save to localStorage
     localStorage.setItem('dr_activeGames', JSON.stringify(games));
     
-    // Render banner
-    renderActiveGameBanner();
+    // Update My Games button
+    if (typeof updateMyGamesButton === 'function') {
+      updateMyGamesButton();
+    }
     
   } catch (err) {
     console.error('Error loading active games:', err);
+  }
+}
+
+// Sync active games from localStorage to Firestore
+async function syncActiveGamesToFirestore(games) {
+  if (!currentUser) return;
+  
+  try {
+    // Convert object to array format
+    const activeGamesArray = Object.values(games).map(game => ({
+      lobbyId: game.lobbyId,
+      phase: game.phase,
+      playerName: game.playerName,
+      lastUpdated: new Date(game.lastUpdated || Date.now())
+    }));
+    
+    await db.collection('users').doc(currentUser.uid).update({
+      activeGames: activeGamesArray
+    });
+    
+    console.log(`💾 Synced ${activeGamesArray.length} games to Firestore`);
+  } catch (err) {
+    console.error('Error syncing games to Firestore:', err);
   }
 }
 

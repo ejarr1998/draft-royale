@@ -120,57 +120,23 @@ function updateActiveGamePhase(phase) {
 }
 
 // Check for active game and show banner on home screen
-function renderActiveGameBanner() {
-  const banner = document.getElementById('activeGameBanner');
+function updateMyGamesButton() {
+  const btn = document.getElementById('myGamesBtn');
+  const badge = document.getElementById('myGamesBadge');
   const games = getActiveGames();
   const gameList = Object.values(games);
   
   if (gameList.length === 0) {
-    banner.style.display = 'none';
+    btn.style.display = 'none';
     return;
   }
   
-  if (gameList.length === 1) {
-    // Single game - compact banner
-    const ag = gameList[0];
-    const phaseLabel = ag.phase === 'waiting' ? '⏳ In Lobby' :
-                       ag.phase === 'drafting' ? '⚔️ Drafting' :
-                       ag.phase === 'live' ? '🔴 Live' :
-                       ag.phase === 'finished' ? '✅ Finished' : '🎮 Active';
-    banner.style.display = 'flex';
-    banner.innerHTML = `
-      <div class="active-game-banner" onclick="rejoinActiveGame('${ag.lobbyId}')">
-        <div class="agb-pip"></div>
-        <div class="agb-info">
-          <div class="agb-title">${phaseLabel} — Room ${ag.lobbyId}</div>
-          <div class="agb-sub">Playing as ${ag.playerName}</div>
-        </div>
-        <button class="agb-btn" onclick="event.stopPropagation(); rejoinActiveGame('${ag.lobbyId}')">REJOIN</button>
-        <button class="agb-leave" onclick="event.stopPropagation(); abandonGame('${ag.lobbyId}')">✕</button>
-      </div>`;
-  } else {
-    // Multiple games - show count with VIEW ALL
-    const liveCount = gameList.filter(g => g.phase === 'live').length;
-    const draftingCount = gameList.filter(g => g.phase === 'drafting').length;
-    const waitingCount = gameList.filter(g => g.phase === 'waiting').length;
-    
-    const statusParts = [];
-    if (liveCount) statusParts.push(`${liveCount} Live`);
-    if (draftingCount) statusParts.push(`${draftingCount} Drafting`);
-    if (waitingCount) statusParts.push(`${waitingCount} Waiting`);
-    const statusText = statusParts.join(' • ');
-    
-    banner.style.display = 'flex';
-    banner.innerHTML = `
-      <div class="active-games-lobby" onclick="showGamesLobby()">
-        <div class="agb-pip"></div>
-        <div class="agb-info">
-          <div class="agb-title">🎮 ${gameList.length} Active Games</div>
-          <div class="agb-sub">${statusText}</div>
-        </div>
-        <button class="agb-btn" onclick="event.stopPropagation(); showGamesLobby()">VIEW ALL</button>
-      </div>`;
-  }
+  btn.style.display = 'flex';
+  badge.textContent = gameList.length;
+}
+
+function goToMyGames() {
+  window.location.href = '/games.html';
 }
 
 function rejoinActiveGame(lobbyId) {
@@ -205,7 +171,7 @@ function abandonGame(lobbyId) {
     isHost = false;
   }
   
-  renderActiveGameBanner();
+  updateMyGamesButton();
   closeGamesLobby();
   showToast('Left the game');
 }
@@ -225,7 +191,7 @@ socket.on('connect', () => {
     clearActiveGame();
     mySessionId = 'ses_' + Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
     localStorage.setItem('dr_sessionId', mySessionId);
-    renderActiveGameBanner();
+    updateMyGamesButton();
     return;
   }
   
@@ -234,7 +200,7 @@ socket.on('connect', () => {
   if (skipRejoin) {
     console.log('⏭️ Skipping auto-rejoin (user went home intentionally)');
     window.history.replaceState({}, '', window.location.pathname); // Clean URL
-    renderActiveGameBanner();
+    updateMyGamesButton();
     return;
   }
   
@@ -242,7 +208,7 @@ socket.on('connect', () => {
   if (ag && mySessionId) {
     socket.emit('rejoin', { sessionId: mySessionId, uid: currentUser?.uid });
   }
-  renderActiveGameBanner();
+  updateMyGamesButton();
 });
 
 socket.on('rejoinState', (data) => {
@@ -302,7 +268,7 @@ socket.on('rejoinState', (data) => {
 
 socket.on('rejoinFailed', () => {
   clearActiveGame();
-  renderActiveGameBanner();
+  updateMyGamesButton();
 });
 
 socket.on('playerReconnected', ({ playerName }) => {
@@ -323,7 +289,7 @@ function showScreen(id) {
 }
 function goHome() {
   showScreen('homeScreen');
-  renderActiveGameBanner();
+  updateMyGamesButton();
 }
 function leaveGame() {
   if (!confirm('Leave this game permanently? You won\'t be able to rejoin.')) return;
@@ -344,7 +310,7 @@ function leaveGame() {
   
   // Go home (user can access other games from active games banner)
   showScreen('homeScreen');
-  renderActiveGameBanner();
+  updateMyGamesButton();
   showToast('Left the game');
 }
 
@@ -387,7 +353,7 @@ async function loadGamesForDate(dateStr) {
 // Init home screen
 buildHomeDatePicker();
 loadGamesForDate(null);
-renderActiveGameBanner();
+updateMyGamesButton();
 const savedName = localStorage.getItem('dr_playerName');
 if (savedName) document.getElementById('playerName').value = savedName;
 
@@ -801,7 +767,7 @@ function leaveLobby() {
   socket.disconnect();
   socket.connect();
   showScreen('homeScreen');
-  renderActiveGameBanner();
+  updateMyGamesButton();
 }
 
 // SOCKET EVENTS

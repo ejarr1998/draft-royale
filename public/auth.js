@@ -13,6 +13,11 @@ auth.onAuthStateChanged(async (user) => {
       photoURL: user.photoURL
     };
     
+    // CRITICAL: Set mySessionId to UID for consistency with server
+    mySessionId = user.uid;
+    localStorage.setItem('dr_sessionId', user.uid);
+    console.log('✅ Set mySessionId to UID:', mySessionId);
+    
     // Ensure user document exists
     await ensureUserDocument(user);
     

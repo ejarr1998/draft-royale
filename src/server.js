@@ -1532,6 +1532,13 @@ function sanitizeName(name) {
 io.on('connection', (socket) => {
   console.log(`Client connected: ${socket.id}`);
   
+  // DEBUG: Log ALL incoming events
+  socket.onAny((eventName, ...args) => {
+    if (eventName !== 'authenticate' && eventName !== 'rejoin') {
+      console.log(`🔔 Event received: ${eventName} from ${socket.id}`);
+    }
+  });
+  
   // Firebase Authentication Handler
   socket.on('authenticate', async ({ uid, displayName, photoURL }) => {
     if (!uid) {
@@ -1870,11 +1877,28 @@ io.on('connection', (socket) => {
   });
   
   socket.on('startDraft', async ({ settings }) => {
+    console.log(`📨 startDraft event received from socket ${socket.id}`);
+    
     const lobby = lobbies[socket.lobbyId];
-    if (!lobby) return;
-    if (socket.sessionId !== lobby.host) return;
-    if (lobby.state === 'drafting') return;
+    if (!lobby) {
+      console.log(`   ❌ No lobby found for socket.lobbyId: ${socket.lobbyId}`);
+      return;
+    }
+    
+    console.log(`   Lobby: ${lobby.id}, Host: ${lobby.host}, Socket sessionId: ${socket.sessionId}, Socket UID: ${socket.uid}`);
+    
+    if (socket.sessionId !== lobby.host) {
+      console.log(`   ❌ Permission denied: socket.sessionId (${socket.sessionId}) !== lobby.host (${lobby.host})`);
+      return;
+    }
+    
+    if (lobby.state === 'drafting') {
+      console.log(`   ❌ Already drafting`);
+      return;
+    }
+    
     if (lobby.players.length < 1) {
+      console.log(`   ❌ Not enough players: ${lobby.players.length}`);
       return socket.emit('error', { message: 'Need at least 1 player' });
     }
     

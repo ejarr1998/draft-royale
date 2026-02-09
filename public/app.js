@@ -499,6 +499,7 @@ async function updateLeagueAvailability(dateISO) {
       nhlBtn.title = '';
     }
     
+    // Disable "Both" if either league is missing - only allow when both have games
     if (!hasNBA || !hasNHL) {
       bothBtn.disabled = true;
       bothBtn.classList.add('seg-btn-disabled');
@@ -510,7 +511,7 @@ async function updateLeagueAvailability(dateISO) {
       bothBtn.title = '';
     }
     
-    // Auto-adjust selection if current choice is unavailable
+    // Auto-switch to available league if current selection is unavailable
     if (lobbySettings.leagues === 'nba' && !hasNBA) {
       if (hasNHL) {
         setLeague('nhl', nhlBtn);
@@ -526,12 +527,13 @@ async function updateLeagueAvailability(dateISO) {
         showToast('No games available for this date!', true);
       }
     } else if (lobbySettings.leagues === 'both' && (!hasNBA || !hasNHL)) {
+      // Auto-switch from "Both" to whichever league has games
       if (hasNBA) {
         setLeague('nba', nbaBtn);
-        showToast('Switched to NBA only (no NHL games today)');
+        console.log('📅 Auto-switched to NBA (no NHL games today)');
       } else if (hasNHL) {
         setLeague('nhl', nhlBtn);
-        showToast('Switched to NHL only (no NBA games today)');
+        console.log('📅 Auto-switched to NHL (no NBA games today)');
       } else {
         showToast('No games available for this date!', true);
       }

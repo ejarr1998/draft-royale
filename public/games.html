@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Games - Draft Royale</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="games.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <div class="games-header">
+      <button class="back-btn" onclick="goHome()">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 12H5M12 19l-7-7 7-7"/>
+        </svg>
+      </button>
+      <h1 class="games-title">My Games</h1>
+      <div class="games-header-spacer"></div>
+    </div>
+
+    <!-- Games List -->
+    <div class="games-container">
+      <div class="games-tabs">
+        <button class="games-tab active" data-filter="all" onclick="filterGames('all')">
+          All <span class="tab-count" id="countAll">0</span>
+        </button>
+        <button class="games-tab" data-filter="live" onclick="filterGames('live')">
+          🔴 Live <span class="tab-count" id="countLive">0</span>
+        </button>
+        <button class="games-tab" data-filter="drafting" onclick="filterGames('drafting')">
+          ⚔️ Drafting <span class="tab-count" id="countDrafting">0</span>
+        </button>
+        <button class="games-tab" data-filter="waiting" onclick="filterGames('waiting')">
+          ⏳ Lobby <span class="tab-count" id="countWaiting">0</span>
+        </button>
+        <button class="games-tab" data-filter="finished" onclick="filterGames('finished')">
+          ✅ Finished <span class="tab-count" id="countFinished">0</span>
+        </button>
+      </div>
+
+      <div id="gamesList" class="games-list">
+        <!-- Games populated by JS -->
+      </div>
+
+      <div id="emptyState" class="games-empty" style="display: none;">
+        <div class="games-empty-icon">🎮</div>
+        <div class="games-empty-title">No Active Games</div>
+        <div class="games-empty-text">Create a new game or join one with a room code</div>
+        <button class="btn btn-hero" onclick="goHome()">Go Home</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="games.js"></script>
+</body>
+</html>

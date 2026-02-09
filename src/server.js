@@ -1937,8 +1937,13 @@ io.on('connection', (socket) => {
       return socket.emit('error', { message: `No NHL games available${dateLabel}. Choose a different date or league.` });
     }
     
-    // For "both" - allow draft as long as at least one league has games
-    // The enrichedPool will already contain only players from available games
+    if (leagues === 'both' && (nbaGames.length === 0 || nhlGames.length === 0)) {
+      lobby.state = 'waiting';
+      const missingLeague = nbaGames.length === 0 ? 'NBA' : 'NHL';
+      const dateLabel = gameDate ? ` on ${new Date(gameDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
+      io.to(lobby.id).emit('draftLoadingDone');
+      return socket.emit('error', { message: `No ${missingLeague} games available${dateLabel}. Please select single league (client should auto-switch).` });
+    }
     
     // Deep clone the enriched pool players so each lobby gets its own copy
     // (prevents multiple lobbies from modifying the same player objects)

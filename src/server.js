@@ -1873,6 +1873,19 @@ io.on('connection', (socket) => {
       return socket.emit('error', { message: 'Need at least 1 player' });
     }
     
+    console.log(`🎯 startDraft called for lobby ${lobby.id}`);
+    console.log(`   Settings from client:`, settings);
+    
+    // Safety timeout - if draft doesn't start in 15 seconds, something is wrong
+    const timeoutId = setTimeout(() => {
+      console.error(`❌ TIMEOUT: Draft start took >15s for lobby ${lobby.id}`);
+      lobby.state = 'waiting';
+      io.to(lobby.id).emit('draftLoadingDone');
+      socket.emit('error', { message: 'Draft timeout - please try again' });
+    }, 15000);
+    
+    try {
+    
     // ⭐ APPLY SETTINGS FROM CLIENT ⭐
     if (settings) {
       lobby.settings = {
@@ -1904,15 +1917,22 @@ io.on('connection', (socket) => {
     lobby.state = 'drafting';
     const { draftType, timePerPick, leagues, gameDate } = lobby.settings;
     
+    console.log(`   Applied settings - leagues: ${leagues}, gameDate: ${gameDate}`);
+    
     io.to(lobby.id).emit('draftLoading', { message: 'Fetching games & players...' });
+    
+    console.log(`   Calling getOrBuildEnrichedPlayerPool(${gameDate}, ${leagues})...`);
     
     // ⭐⭐⭐ USE THE CACHED ENRICHED POOL ⭐⭐⭐
     const enrichedPool = await getOrBuildEnrichedPlayerPool(gameDate, leagues);
+    
+    console.log(`   ✅ Got enriched pool: ${enrichedPool.players?.length || 0} players`);
     
     if (enrichedPool.error || enrichedPool.players.length === 0) {
       lobby.state = 'waiting';
       const dateLabel = gameDate ? ` on ${new Date(gameDate + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : '';
       io.to(lobby.id).emit('draftLoadingDone');
+      console.log(`   ❌ Error: ${enrichedPool.error || 'No players'}`);
       return socket.emit('error', { message: enrichedPool.error || `No players available to draft${dateLabel}!` });
     }
     
@@ -1960,7 +1980,18 @@ io.on('connection', (socket) => {
     // Save to Firestore (non-blocking - let it happen in background)
     saveLobbyToFirestore(lobby);
     
-    console.log(`Draft started in lobby ${lobby.id}`);
+    console.log(`✅ Draft started successfully in lobby ${lobby.id}`);
+    
+    // Clear the timeout - draft started successfully
+    clearTimeout(timeoutId);
+    
+    } catch (error) {
+      console.error(`❌ Error in startDraft for lobby ${lobby.id}:`, error);
+      lobby.state = 'waiting';
+      io.to(lobby.id).emit('draftLoadingDone');
+      socket.emit('error', { message: 'Failed to start draft - please try again' });
+      clearTimeout(timeoutId);
+    }
   });
   
   socket.on('draftPick', ({ playerId }) => {

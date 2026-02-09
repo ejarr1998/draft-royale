@@ -1949,6 +1949,9 @@ io.on('connection', (socket) => {
         }))
     });
     
+    // IMPORTANT: Hide the loading overlay
+    io.to(lobby.id).emit('draftLoadingDone');
+    
     // Send personalized pool to the first drafter
     sendPersonalizedPlayerPool(lobby, lobby.draftOrder[0]);
     

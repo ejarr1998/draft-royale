@@ -865,6 +865,27 @@ socket.on('draftStart', ({ lobby, availablePlayers: players, draftOrder, current
   hideDraftLoading();
   lobbyState = lobby; availablePlayers = players; draftOrderList = draftOrder;
   draftGames = games || []; currentGameFilter = 'all';
+  
+  // Smart league detection: auto-select available league if one is missing
+  const hasNBA = draftGames.some(g => g.league === 'nba');
+  const hasNHL = draftGames.some(g => g.league === 'nhl');
+  const leagueSetting = lobby.settings?.leagues || 'both';
+  
+  // Auto-adjust filter based on what games are available
+  if (leagueSetting === 'both') {
+    if (hasNBA && !hasNHL) {
+      currentFilter = 'nba';
+      console.log('🏀 Auto-selected NBA (no NHL games available)');
+    } else if (hasNHL && !hasNBA) {
+      currentFilter = 'nhl';
+      console.log('🏒 Auto-selected NHL (no NBA games available)');
+    } else {
+      currentFilter = 'all';
+    }
+  } else {
+    currentFilter = 'all';
+  }
+  
   updateActiveGamePhase('drafting');
   showScreen('draftScreen');
   updateLeagueFilterVisibility();
@@ -1393,6 +1414,15 @@ function updateLeagueFilterVisibility() {
     currentFilter = 'all';
   } else {
     filterRow.style.display = 'flex';
+    
+    // Update visual state of filter chips to match currentFilter
+    document.querySelectorAll('#draftPool .filter-chip').forEach(chip => {
+      chip.classList.remove('active', 'active-nhl');
+      const chipFilter = chip.getAttribute('onclick')?.match(/setFilter\('([^']+)'/)?.[1];
+      if (chipFilter === currentFilter) {
+        chip.classList.add(currentFilter === 'nhl' ? 'active-nhl' : 'active');
+      }
+    });
   }
 }
 

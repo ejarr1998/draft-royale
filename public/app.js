@@ -54,14 +54,19 @@ socket.on('authError', ({ message }) => {
 function saveActiveGame(lobbyId, phase, playerName) {
   const games = JSON.parse(localStorage.getItem('dr_activeGames') || '{}');
   games[lobbyId] = {
-    lobbyId, phase, playerName, sessionId: mySessionId, savedAt: Date.now()
+    lobbyId, phase, playerName, lastUpdated: Date.now()
   };
   localStorage.setItem('dr_activeGames', JSON.stringify(games));
   
-  // Cleanup old games (>5 hours)
+  // Sync to Firestore if authenticated
+  if (typeof syncActiveGamesToFirestore === 'function') {
+    syncActiveGamesToFirestore(games);
+  }
+  
+  // Cleanup old games (>24 hours)
   const now = Date.now();
   Object.keys(games).forEach(id => {
-    if (now - games[id].savedAt > 5 * 60 * 60 * 1000) {
+    if (games[id].lastUpdated && now - games[id].lastUpdated > 24 * 60 * 60 * 1000) {
       delete games[id];
     }
   });
@@ -104,6 +109,11 @@ function clearActiveGame(lobbyId) {
     Object.keys(games).forEach(id => delete games[id]);
   }
   localStorage.setItem('dr_activeGames', JSON.stringify(games));
+  
+  // Sync to Firestore
+  if (typeof syncActiveGamesToFirestore === 'function') {
+    syncActiveGamesToFirestore(games);
+  }
   
   // Clean up old format
   localStorage.removeItem('dr_activeGame');

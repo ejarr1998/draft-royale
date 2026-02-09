@@ -55,19 +55,16 @@ function renderGames() {
   
   // Render game cards
   gamesList.innerHTML = gameArray.map(game => {
-    const phaseIcon = game.phase === 'live' ? '🔴' :
-                      game.phase === 'drafting' ? '⚔️' :
-                      game.phase === 'waiting' ? '⏳' : '✅';
     const phaseLabel = game.phase === 'live' ? 'Live' :
                        game.phase === 'drafting' ? 'Drafting' :
-                       game.phase === 'waiting' ? 'In Lobby' : 'Finished';
+                       game.phase === 'waiting' ? 'Lobby' : 'Finished';
     
     // Button text based on phase
-    const primaryBtnText = game.phase === 'live' ? '👁️ Watch' :
-                           game.phase === 'drafting' ? '▶️ Continue Draft' :
-                           game.phase === 'waiting' ? '▶️ Rejoin Lobby' : '📊 View Results';
+    const primaryBtnText = game.phase === 'live' ? 'Watch Live' :
+                           game.phase === 'drafting' ? 'Continue Draft' :
+                           game.phase === 'waiting' ? 'Rejoin Lobby' : 'View Results';
     
-    const secondaryBtnText = game.phase === 'finished' ? '🗑️ Delete' : '👋 Leave';
+    const secondaryBtnText = game.phase === 'finished' ? 'Delete' : 'Leave';
     
     // Time info
     const lastUpdated = game.lastUpdated ? new Date(game.lastUpdated) : null;
@@ -76,13 +73,16 @@ function renderGames() {
     return `
       <div class="game-card ${game.phase}" data-phase="${game.phase}">
         <div class="game-card-header">
-          <div class="game-card-status">${phaseIcon} ${phaseLabel}</div>
-          <div class="game-card-code">Room ${game.lobbyId}</div>
+          <div class="game-card-status">
+            <div class="status-indicator"></div>
+            ${phaseLabel}
+          </div>
+          <div class="game-card-code">${game.lobbyId}</div>
         </div>
         <div class="game-card-info">
           <div class="game-card-player">Playing as <strong>${game.playerName}</strong></div>
           ${timeAgo ? `<div class="game-card-meta">
-            <div class="game-card-meta-item">⏱️ ${timeAgo}</div>
+            <div class="game-card-meta-item">${timeAgo}</div>
           </div>` : ''}
         </div>
         <div class="game-card-actions">
@@ -95,6 +95,7 @@ function renderGames() {
         </div>
       </div>
     `;
+  }).join('');
   }).join('');
   
   // Apply filter

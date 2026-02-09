@@ -788,7 +788,8 @@ function startDraft() {
   
   console.log('✅ CLIENT: startDraft emitted with settings:', {
     leagues: lobbySettings.leagues,
-    gameDate: lobbySettings.gameDate
+    gameDate: lobbySettings.gameDate,
+    rosterSlots: lobbySettings.rosterSlots
   });
 }
 

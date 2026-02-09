@@ -1885,10 +1885,13 @@ io.on('connection', (socket) => {
       return;
     }
     
-    console.log(`   Lobby: ${lobby.id}, Host: ${lobby.host}, Socket sessionId: ${socket.sessionId}, Socket UID: ${socket.uid}`);
+    console.log(`   Lobby: ${lobby.id}, Host: ${lobby.host}, Socket UID: ${socket.uid}`);
     
-    if (socket.sessionId !== lobby.host) {
-      console.log(`   ❌ Permission denied: socket.sessionId (${socket.sessionId}) !== lobby.host (${lobby.host})`);
+    // Use UID for permission check (not sessionId)
+    const userId = socket.uid || socket.sessionId;
+    
+    if (userId !== lobby.host) {
+      console.log(`   ❌ Permission denied: userId (${userId}) !== lobby.host (${lobby.host})`);
       return;
     }
     
@@ -1902,7 +1905,7 @@ io.on('connection', (socket) => {
       return socket.emit('error', { message: 'Need at least 1 player' });
     }
     
-    console.log(`🎯 startDraft called for lobby ${lobby.id}`);
+    console.log(`🎯 startDraft called for lobby ${lobby.id} by ${userId}`);
     console.log(`   Settings from client:`, settings);
     
     // Safety timeout - if draft doesn't start in 15 seconds, something is wrong

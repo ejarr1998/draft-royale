@@ -430,6 +430,13 @@ function setGameDate(iso, btn) {
 // Check which leagues have games and disable unavailable ones
 async function updateLeagueAvailability(dateISO) {
   try {
+    // Default to today if no date provided
+    if (!dateISO) {
+      const today = new Date();
+      dateISO = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      console.log(`📅 No date provided, defaulting to today: ${dateISO}`);
+    }
+    
     // Fetch games for selected date
     const response = await fetch(`/api/games?date=${dateISO}`);
     const games = await response.json();

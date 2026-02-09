@@ -27,16 +27,16 @@
           All <span class="tab-count" id="countAll">0</span>
         </button>
         <button class="games-tab" data-filter="live" onclick="filterGames('live')">
-          🔴 Live <span class="tab-count" id="countLive">0</span>
+          Live <span class="tab-count" id="countLive">0</span>
         </button>
         <button class="games-tab" data-filter="drafting" onclick="filterGames('drafting')">
-          ⚔️ Drafting <span class="tab-count" id="countDrafting">0</span>
+          Drafting <span class="tab-count" id="countDrafting">0</span>
         </button>
         <button class="games-tab" data-filter="waiting" onclick="filterGames('waiting')">
-          ⏳ Lobby <span class="tab-count" id="countWaiting">0</span>
+          Lobby <span class="tab-count" id="countWaiting">0</span>
         </button>
         <button class="games-tab" data-filter="finished" onclick="filterGames('finished')">
-          ✅ Finished <span class="tab-count" id="countFinished">0</span>
+          Finished <span class="tab-count" id="countFinished">0</span>
         </button>
       </div>
 
@@ -45,9 +45,14 @@
       </div>
 
       <div id="emptyState" class="games-empty" style="display: none;">
-        <div class="games-empty-icon">🎮</div>
+        <div class="games-empty-icon">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+            <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+          </svg>
+        </div>
         <div class="games-empty-title">No Active Games</div>
-        <div class="games-empty-text">Create a new game or join one with a room code</div>
+        <div class="games-empty-text">Create a new game or join one with a room code to get started</div>
         <button class="btn btn-hero" onclick="goHome()">Go Home</button>
       </div>
     </div>

@@ -549,6 +549,8 @@ body::before {
 /* Draft games bar */
 .draft-games-bar {
   margin-bottom: 8px;
+  width: 100%;
+  overflow: hidden; /* Prevent bar from expanding */
 }
 .draft-games-label {
   font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; font-weight: 700;
@@ -556,17 +558,30 @@ body::before {
   margin-bottom: 6px;
 }
 .draft-games-scroll {
-  display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px;
-  scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+  display: flex; 
+  gap: 6px; 
+  overflow-x: auto; 
+  overflow-y: hidden;
+  padding-bottom: 4px;
+  -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+  width: 100%;
+  /* Remove scroll-snap for better manual scrolling */
 }
 .draft-games-scroll::-webkit-scrollbar { display: none; }
 .draft-game-chip {
-  flex-shrink: 0; scroll-snap-align: start; cursor: pointer;
-  padding: 8px 12px; border-radius: 10px;
-  background: var(--surface); border: 1px solid var(--border);
-  transition: all 0.2s; display: flex; align-items: center; gap: 8px;
-  min-width: 0;
+  flex-shrink: 0; /* Don't shrink */
+  cursor: pointer;
+  padding: 8px 12px; 
+  border-radius: 10px;
+  background: var(--surface); 
+  border: 1px solid var(--border);
+  transition: all 0.2s; 
+  display: flex; 
+  align-items: center; 
+  gap: 8px;
+  white-space: nowrap; /* Keep text on one line */
+  min-width: fit-content; /* Ensure full content is visible */
 }
 .draft-game-chip:hover { border-color: var(--border-light); transform: translateY(-1px); }
 .draft-game-chip.chip-active { border-color: var(--accent); background: rgba(255,87,34,0.08); box-shadow: 0 2px 10px rgba(255,87,34,0.12); }

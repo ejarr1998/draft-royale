@@ -1696,8 +1696,12 @@ io.on('connection', (socket) => {
         
         // Add to user's active games with proper structure
         if (socket.uid) {
+          console.log(`   Adding lobby ${lobby.id} to user ${socket.uid} activeGames...`);
+          
           return firestoreDb.collection('users').doc(socket.uid).get().then(userDoc => {
             const activeGames = userDoc.exists ? (userDoc.data().activeGames || []) : [];
+            
+            console.log(`   Current activeGames count: ${activeGames.length}`);
             
             // Add new game
             activeGames.push({
@@ -1707,7 +1711,12 @@ io.on('connection', (socket) => {
               lastUpdated: new Date()
             });
             
+            console.log(`   New activeGames count: ${activeGames.length}`);
+            console.log(`   Updating Firestore...`);
+            
             return firestoreDb.collection('users').doc(socket.uid).update({ activeGames });
+          }).then(() => {
+            console.log(`   ✅ Updated activeGames for user ${socket.uid}`);
           });
         }
       }).catch(err => {

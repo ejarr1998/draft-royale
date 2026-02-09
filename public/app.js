@@ -873,9 +873,17 @@ socket.on('draftLoadingDone', () => {
 });
 
 socket.on('draftStart', ({ lobby, availablePlayers: players, draftOrder, currentPick, currentDrafter, timePerPick, games }) => {
+  console.log('📥 draftStart received:', {
+    playerCount: players?.length || 0,
+    currentDrafter,
+    mySessionId
+  });
+  
   hideDraftLoading();
   lobbyState = lobby; availablePlayers = players; draftOrderList = draftOrder;
   draftGames = games || []; currentGameFilter = 'all';
+  
+  console.log('   Initial availablePlayers:', availablePlayers.length);
   
   // Smart league detection: auto-select available league if one is missing
   const hasNBA = draftGames.some(g => g.league === 'nba');
@@ -929,9 +937,15 @@ socket.on('nextPick', ({ currentPick, currentDrafter, timePerPick }) => {
 
 // ⭐ NEW: Handle personalized player pool updates
 socket.on('personalizedPlayerPool', ({ availablePlayers: personalizedPlayers, fullLeagues }) => {
+  console.log('📥 Received personalizedPlayerPool:', {
+    count: personalizedPlayers?.length || 0,
+    fullLeagues
+  });
+  
   // If we receive a personalized pool, use it instead of the full pool
   if (personalizedPlayers) {
     availablePlayers = personalizedPlayers;
+    console.log('   Updated availablePlayers to personalized pool:', availablePlayers.length);
     renderPlayerPool();
     
     // Optional: Show toast if leagues are full

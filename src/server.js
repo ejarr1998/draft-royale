@@ -1933,7 +1933,35 @@ io.on('connection', (socket) => {
         if (lobbyDoc.exists) {
           lobby = lobbyDoc.data();
           lobbies[targetLobbyId] = lobby;
-          console.log(`   🔄 Restored lobby ${targetLobbyId} from Firestore`);
+          console.log(`   🔄 Restored lobby ${targetLobbyId} from Firestore (state: ${lobby.state})`);
+          
+          // If lobby was marked as finished, re-check if games are actually still live
+          if (lobby.state === 'finished' || lobby.state === 'live') {
+            const hasNBA = lobby.settings?.leagues === 'both' || lobby.settings?.leagues === 'nba';
+            const hasNHL = lobby.settings?.leagues === 'both' || lobby.settings?.leagues === 'nhl';
+            
+            // Re-fetch game schedules to check current status
+            const nbaSchedule = hasNBA ? await fetchNBASchedule(lobby.gameDate) : [];
+            const nhlSchedule = hasNHL ? await fetchNHLSchedule(lobby.gameDate) : [];
+            const allGames = [...nbaSchedule, ...nhlSchedule];
+            
+            // Check if games are actually finished
+            const gamesFinished = allGames.every(g => 
+              g.state === 'post' || g.state === 'OFF' || g.state === 'FINAL'
+            );
+            
+            if (!gamesFinished && lobby.state === 'finished') {
+              // Games are still live! Change state back to live
+              lobby.state = 'live';
+              console.log(`   ⚠️ Lobby ${targetLobbyId} was marked finished but games still live - reverting to live`);
+              
+              // Restart score updates
+              if (!lobby.scoreInterval) {
+                lobby.scoreInterval = setInterval(() => updateLiveScores(targetLobbyId), SCORE_UPDATE_INTERVAL);
+                console.log(`   ▶️ Restarted score updates for lobby ${targetLobbyId}`);
+              }
+            }
+          }
         }
       } catch (err) {
         console.error(`Error restoring lobby ${targetLobbyId}:`, err);

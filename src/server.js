@@ -1960,8 +1960,8 @@ io.on('connection', (socket) => {
       
       try {
         // Re-fetch game schedules to check current status
-        const nbaSchedule = hasNBA ? await fetchNBASchedule(lobby.gameDate) : [];
-        const nhlSchedule = hasNHL ? await fetchNHLSchedule(lobby.gameDate) : [];
+        const nbaSchedule = hasNBA ? await fetchNBAGames(lobby.gameDate) : [];
+        const nhlSchedule = hasNHL ? await fetchNHLGames(lobby.gameDate) : [];
         const allGames = [...nbaSchedule, ...nhlSchedule];
         
         console.log(`   Found ${allGames.length} games for ${lobby.gameDate}`);

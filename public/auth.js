@@ -71,7 +71,7 @@ async function loadActiveGamesFromFirestore() {
     
     console.log(`📂 Loading ${activeGamesArray.length} active games from Firestore`);
     
-    // Convert array to object format for localStorage
+    // Convert array to object format for localStorage (cache only)
     const games = {};
     for (const game of activeGamesArray) {
       // New format already has {lobbyId, phase, playerName, lastUpdated}
@@ -79,13 +79,14 @@ async function loadActiveGamesFromFirestore() {
         lobbyId: game.lobbyId,
         phase: game.phase,
         playerName: game.playerName,
-        lastUpdated: game.lastUpdated?.toMillis ? game.lastUpdated.toMillis() : game.lastUpdated
+        lastUpdated: game.lastUpdated?.toMillis ? game.lastUpdated.toMillis() : game.lastUpdated,
+        isHistory: false
       };
     }
     
     console.log(`✅ Loaded games:`, Object.keys(games));
     
-    // Save to localStorage
+    // Cache to localStorage (Firestore is source of truth)
     localStorage.setItem('dr_activeGames', JSON.stringify(games));
     
     // Update My Games button

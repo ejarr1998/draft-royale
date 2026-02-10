@@ -137,18 +137,17 @@ function updateActiveGamePhase(phase) {
 
 // Check for active game and show banner on home screen
 function updateMyGamesButton() {
-  const btn = document.getElementById('myGamesBtn');
   const badge = document.getElementById('myGamesBadge');
   const games = getActiveGames();
   const gameList = Object.values(games);
   
+  // Always show button, just toggle badge visibility
   if (gameList.length === 0) {
-    btn.style.display = 'none';
-    return;
+    badge.style.display = 'none';
+  } else {
+    badge.style.display = 'inline-flex';
+    badge.textContent = gameList.length;
   }
-  
-  btn.style.display = 'flex';
-  badge.textContent = gameList.length;
 }
 
 function goToMyGames() {
@@ -844,6 +843,10 @@ function leaveLobby() {
 socket.on('lobbyCreated', ({ lobbyId, lobby }) => {
   myLobbyId = lobbyId; isHost = true; lobbyState = lobby;
   saveActiveGame(lobbyId, 'waiting', myName);
+  
+  console.log(`✅ Lobby created: ${lobbyId}`);
+  console.log(`   Saved to localStorage, syncing to Firestore...`);
+  
   showScreen('lobbyScreen');
   document.getElementById('lobbyCode').textContent = lobbyId;
   document.getElementById('hostControls').style.display = 'block';
@@ -856,6 +859,7 @@ socket.on('lobbyCreated', ({ lobbyId, lobby }) => {
   updateLeagueAvailability(lobbySettings.gameDate);
   
   renderLobbyPlayers(lobby);
+  updateMyGamesButton();
 });
 
 socket.on('lobbyUpdate', (lobby) => {

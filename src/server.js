@@ -1881,56 +1881,82 @@ io.on('connection', (socket) => {
     console.log(`${playerName} joined lobby ${code} (session ${sessionId})`);
   });
   
-  socket.on('rejoin', async ({ sessionId, uid }) => {
+  socket.on('rejoin', async ({ sessionId, uid, lobbyId }) => {
     // Support both UID (new) and sessionId (old)
     const userId = uid || socket.uid || sessionId;
+    
+    console.log(`📥 Rejoin request: userId=${userId}, lobbyId=${lobbyId}`);
     
     if (!userId) {
       return socket.emit('rejoinFailed', { reason: 'no_auth' });
     }
     
-    // If Firebase UID is provided, try loading from Firestore first
-    if (uid && firestoreDb) {
+    let targetLobbyId = lobbyId; // Use explicit lobby ID if provided
+    
+    // If no lobby ID provided, try to find from session
+    if (!targetLobbyId) {
+      const session = sessions[userId];
+      targetLobbyId = session?.lobbyId;
+    }
+    
+    // If Firebase UID is provided and we still don't have lobby, try Firestore
+    if (!targetLobbyId && uid && firestoreDb) {
       try {
         const userDoc = await firestoreDb.collection('users').doc(uid).get();
-        const activeGameIds = userDoc.data()?.activeGames || [];
+        const activeGames = userDoc.data()?.activeGames || [];
         
-        // Try to restore lobby from Firestore
-        for (const lobbyId of activeGameIds) {
-          const lobbyDoc = await firestoreDb.collection('lobbies').doc(lobbyId).get();
-          if (lobbyDoc.exists) {
-            const lobbyData = lobbyDoc.data();
-            
-            // Restore lobby to memory if not there
-            if (!lobbies[lobbyId]) {
-              lobbies[lobbyId] = lobbyData;
-              console.log(`🔄 Restored lobby ${lobbyId} from Firestore`);
-            }
-          }
+        // Get the most recent game
+        if (activeGames.length > 0) {
+          const sorted = activeGames.sort((a, b) => {
+            const aTime = a.lastUpdated?.toMillis ? a.lastUpdated.toMillis() : 0;
+            const bTime = b.lastUpdated?.toMillis ? b.lastUpdated.toMillis() : 0;
+            return bTime - aTime;
+          });
+          targetLobbyId = sorted[0].lobbyId;
+          console.log(`   Found lobby ${targetLobbyId} from Firestore`);
         }
       } catch (err) {
         console.error('Error loading from Firestore:', err);
       }
     }
     
-    const session = sessions[userId];
-    if (!session) {
-      return socket.emit('rejoinFailed', { reason: 'no_session' });
+    if (!targetLobbyId) {
+      console.warn(`   ❌ No lobby ID found for user ${userId}`);
+      return socket.emit('rejoinFailed', { reason: 'no_lobby' });
     }
     
-    const lobby = lobbies[session.lobbyId];
+    // Try to restore lobby from Firestore if not in memory
+    let lobby = lobbies[targetLobbyId];
+    if (!lobby && firestoreDb) {
+      try {
+        const lobbyDoc = await firestoreDb.collection('lobbies').doc(targetLobbyId).get();
+        if (lobbyDoc.exists) {
+          lobby = lobbyDoc.data();
+          lobbies[targetLobbyId] = lobby;
+          console.log(`   🔄 Restored lobby ${targetLobbyId} from Firestore`);
+        }
+      } catch (err) {
+        console.error(`Error restoring lobby ${targetLobbyId}:`, err);
+      }
+    }
+    
     if (!lobby) {
-      delete sessions[userId];
+      console.warn(`   ❌ Lobby ${targetLobbyId} not found`);
       return socket.emit('rejoinFailed', { reason: 'lobby_gone' });
     }
     
     const player = lobby.players.find(p => p.id === userId || p.uid === uid);
     if (!player) {
-      delete sessions[userId];
+      console.warn(`   ❌ Player not found in lobby ${targetLobbyId}`);
       return socket.emit('rejoinFailed', { reason: 'player_gone' });
     }
     
-    session.socketId = socket.id;
+    // Create or update session
+    if (!sessions[userId]) {
+      sessions[userId] = { lobbyId: targetLobbyId };
+    }
+    sessions[userId].socketId = socket.id;
+    
     socket.lobbyId = lobby.id;
     socket.sessionId = sessionId || userId;
     socket.uid = uid || socket.uid;

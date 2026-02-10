@@ -231,6 +231,10 @@ async function loadGames() {
 
 // Render games list
 function renderGames() {
+  console.log('🎨 renderGames() called');
+  console.log('   games object:', games);
+  console.log('   games keys:', Object.keys(games));
+  
   const gamesList = document.getElementById('gamesList');
   const emptyState = document.getElementById('emptyState');
   const gameArray = Object.values(games);

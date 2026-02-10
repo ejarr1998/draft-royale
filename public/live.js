@@ -19,8 +19,12 @@ socket.on('connect', () => {
   
   if (lobbyId && mySessionId) {
     myLobbyId = lobbyId;
-    console.log('📤 Sending rejoin request...');
-    socket.emit('rejoin', { sessionId: mySessionId });
+    console.log(`📤 Sending rejoin request for lobby ${lobbyId}...`);
+    socket.emit('rejoin', { 
+      sessionId: mySessionId, 
+      uid: mySessionId, // Pass UID for Firebase lookup
+      lobbyId: lobbyId  // Pass lobby ID explicitly
+    });
   } else {
     console.error('❌ Missing lobbyId or sessionId');
   }

@@ -148,17 +148,12 @@ function renderGames() {
   
   console.log(`🎮 Rendering ${gameArray.length} games:`, gameArray);
   
-  // Treat completed as finished for display
-  gameArray.forEach(g => {
-    if (g.phase === 'completed') g.phase = 'finished';
-  });
-  
-  // Update counts
+  // Update counts - treat completed same as finished for counting
   const allCount = gameArray.length;
   const liveCount = gameArray.filter(g => g.phase === 'live').length;
   const draftingCount = gameArray.filter(g => g.phase === 'drafting').length;
   const waitingCount = gameArray.filter(g => g.phase === 'waiting').length;
-  const finishedCount = gameArray.filter(g => g.phase === 'finished').length;
+  const finishedCount = gameArray.filter(g => g.phase === 'finished' || g.phase === 'completed').length;
   
   console.log(`   Phase counts: Live=${liveCount}, Drafting=${draftingCount}, Waiting=${waitingCount}, Finished=${finishedCount}`);
   
@@ -178,8 +173,8 @@ function renderGames() {
   gamesList.style.display = 'flex';
   emptyState.style.display = 'none';
   
-  // Sort by urgency: Live > Drafting > Waiting > Finished
-  const phaseOrder = { live: 1, drafting: 2, waiting: 3, finished: 4 };
+  // Sort by urgency: Live > Drafting > Waiting > Finished/Completed
+  const phaseOrder = { live: 1, drafting: 2, waiting: 3, finished: 4, completed: 4 };
   gameArray.sort((a, b) => phaseOrder[a.phase] - phaseOrder[b.phase]);
   
   // Render game cards
@@ -188,12 +183,15 @@ function renderGames() {
                        game.phase === 'drafting' ? 'Drafting' :
                        game.phase === 'waiting' ? 'Lobby' : 'Finished';
     
+    // Use finished phase for filtering (treat completed as finished)
+    const displayPhase = game.phase === 'completed' ? 'finished' : game.phase;
+    
     // Button text based on phase
     const primaryBtnText = game.phase === 'live' ? 'Watch Live' :
                            game.phase === 'drafting' ? 'Continue Draft' :
                            game.phase === 'waiting' ? 'Rejoin Lobby' : 'View Results';
     
-    const secondaryBtnText = game.phase === 'finished' ? 'Delete' : 'Leave';
+    const secondaryBtnText = (game.phase === 'finished' || game.phase === 'completed') ? 'Delete' : 'Leave';
     
     // Time info - handle various timestamp formats
     let lastUpdated = null;
@@ -212,20 +210,20 @@ function renderGames() {
     // Score info - show for live and finished games (only if score > 0)
     let scoreInfo = '';
     if ((game.currentScore !== undefined || game.finalScore !== undefined) && 
-        (game.phase === 'live' || game.phase === 'finished')) {
+        (game.phase === 'live' || game.phase === 'finished' || game.phase === 'completed')) {
       const score = game.finalScore !== undefined ? game.finalScore : game.currentScore;
       
       // Only show if score is greater than 0
       if (score > 0) {
         const isWinner = game.isHistory && game.winner && game.winner.uid === (currentUser ? currentUser.uid : null);
         
-        if (game.phase === 'finished' && isWinner) {
+        if ((game.phase === 'finished' || game.phase === 'completed') && isWinner) {
           scoreInfo = `
             <div class="game-card-score winner">
               🏆 Winner · ${score} pts
             </div>
           `;
-        } else if (game.phase === 'finished') {
+        } else if (game.phase === 'finished' || game.phase === 'completed') {
           scoreInfo = `
             <div class="game-card-score">
               Final: ${score} pts
@@ -242,7 +240,7 @@ function renderGames() {
     }
     
     return `
-      <div class="game-card ${game.phase}" data-phase="${game.phase}">
+      <div class="game-card ${displayPhase}" data-phase="${displayPhase}">
         <div class="game-card-header">
           <div class="game-card-status">
             <div class="status-indicator"></div>
@@ -306,8 +304,8 @@ function rejoinGame(lobbyId) {
     return;
   }
   
-  // For finished/live games, always go to live.html to view scores
-  if (game.phase === 'finished' || game.phase === 'live') {
+  // For finished/completed/live games, always go to live.html to view scores
+  if (game.phase === 'finished' || game.phase === 'live' || game.phase === 'completed') {
     window.location.href = `/live.html?lobby=${lobbyId}`;
   } else {
     // For waiting/drafting, go to home to rejoin

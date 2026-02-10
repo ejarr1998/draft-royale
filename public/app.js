@@ -76,14 +76,9 @@ function saveActiveGame(lobbyId, phase, playerName) {
 function getActiveGames() {
   try {
     const games = JSON.parse(localStorage.getItem('dr_activeGames') || '{}');
-    const now = Date.now();
     
-    // Filter out stale games
-    Object.keys(games).forEach(id => {
-      if (now - games[id].savedAt > 5 * 60 * 60 * 1000) {
-        delete games[id];
-      }
-    });
+    // NO client-side TTL filtering - Firestore is source of truth
+    // Games persist until explicitly deleted via leaveGame or server cleanup
     
     return games;
   } catch { return {}; }
@@ -95,8 +90,14 @@ function getActiveGame() {
   const gameList = Object.values(games);
   if (gameList.length === 0) return null;
   
-  // Return most recently saved game
-  return gameList.sort((a, b) => b.savedAt - a.savedAt)[0];
+  // Return most recently updated game
+  const sorted = gameList.sort((a, b) => {
+    const aTime = a.lastUpdated || a.savedAt || 0;
+    const bTime = b.lastUpdated || b.savedAt || 0;
+    return bTime - aTime;
+  });
+  
+  return sorted[0];
 }
 
 function clearActiveGame(lobbyId) {
@@ -124,8 +125,13 @@ function updateActiveGamePhase(phase) {
   const games = getActiveGames();
   if (games[myLobbyId]) {
     games[myLobbyId].phase = phase;
-    games[myLobbyId].savedAt = Date.now();
+    games[myLobbyId].lastUpdated = Date.now();
     localStorage.setItem('dr_activeGames', JSON.stringify(games));
+    
+    // Sync to Firestore
+    if (typeof syncActiveGamesToFirestore === 'function') {
+      syncActiveGamesToFirestore(games);
+    }
   }
 }
 

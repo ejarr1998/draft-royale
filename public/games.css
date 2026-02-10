@@ -1,423 +1,453 @@
-/* My Games Page - Modern Redesign */
+// My Games Page
+const socket = io();
 
-:root {
-  --status-live: #ef4444;
-  --status-drafting: #f97316;
-  --status-waiting: #64748b;
-  --status-finished: #22c55e;
-  --status-completed: #8b5cf6;
-}
+let mySessionId = localStorage.getItem('dr_sessionId') || '';
+let currentUser = null;
+let currentFilter = 'all';
+let games = {};
 
-.games-header {
-  display: flex;
-  align-items: center;
-  padding: 20px 24px;
-  background: var(--card-bg);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  backdrop-filter: blur(10px);
-}
+// Firebase already initialized in firebase-config.js
+// db, auth, firebase are already available globally
 
-.back-btn {
-  background: none;
-  border: none;
-  color: var(--text-mid);
-  padding: 8px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  transition: all 0.2s;
-}
-
-.back-btn:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-
-.games-title {
-  flex: 1;
-  text-align: center;
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--text);
-  margin: 0;
-  letter-spacing: -0.01em;
-}
-
-.games-header-spacer {
-  width: 40px;
-}
-
-.games-container {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 0;
-}
-
-/* Tabs */
-.games-tabs {
-  display: flex;
-  gap: 0;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border);
-  background: var(--card-bg);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-}
-
-.games-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.games-tab {
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-mid);
-  padding: 8px 16px;
-  font-size: 0.875rem;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.games-tab:hover {
-  color: var(--text);
-  background: var(--hover);
-  border-radius: 6px 6px 0 0;
-}
-
-.games-tab.active {
-  color: var(--primary);
-  border-bottom-color: var(--primary);
-}
-
-.tab-count {
-  background: var(--bg);
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--text-dim);
-}
-
-.games-tab.active .tab-count {
-  background: var(--primary);
-  color: white;
-}
-
-/* Games List */
-.games-list {
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-/* Game Card */
-.game-card {
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 20px;
-  transition: all 0.2s;
-  cursor: pointer;
-  position: relative;
-  overflow: hidden;
-}
-
-.game-card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  background: var(--border);
-  transition: all 0.2s;
-}
-
-.game-card.live::before {
-  background: var(--status-live);
-}
-
-.game-card.drafting::before {
-  background: var(--status-drafting);
-}
-
-.game-card.waiting::before {
-  background: var(--status-waiting);
-}
-
-.game-card.finished::before {
-  background: var(--status-finished);
-}
-
-.game-card.completed::before {
-  background: var(--status-completed);
-}
-
-.game-card:hover {
-  border-color: var(--text-dim);
-  transform: translateX(2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-.game-card.hidden {
-  display: none;
-}
-
-.game-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-
-.game-card-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 0.875rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.status-indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--border);
-}
-
-.game-card.live .status-indicator {
-  background: var(--status-live);
-  animation: pulse-glow 2s ease-in-out infinite;
-}
-
-.game-card.drafting .status-indicator {
-  background: var(--status-drafting);
-}
-
-.game-card.waiting .status-indicator {
-  background: var(--status-waiting);
-}
-
-.game-card.finished .status-indicator {
-  background: var(--status-finished);
-}
-
-.game-card.completed .status-indicator {
-  background: var(--status-completed);
-}
-
-.game-card.live .game-card-status {
-  color: var(--status-live);
-}
-
-.game-card.drafting .game-card-status {
-  color: var(--status-drafting);
-}
-
-.game-card.waiting .game-card-status {
-  color: var(--status-waiting);
-}
-
-.game-card.finished .game-card-status {
-  color: var(--status-finished);
-}
-
-.game-card.completed .game-card-status {
-  color: var(--status-completed);
-}
-
-.game-card-code {
-  font-family: 'JetBrains Mono', 'Courier New', monospace;
-  font-size: 0.813rem;
-  font-weight: 600;
-  color: var(--text-dim);
-  background: var(--bg);
-  padding: 6px 12px;
-  border-radius: 6px;
-  letter-spacing: 0.05em;
-}
-
-.game-card-info {
-  margin-bottom: 16px;
-}
-
-.game-card-player {
-  color: var(--text);
-  font-size: 0.938rem;
-  margin-bottom: 8px;
-  font-weight: 500;
-}
-
-.game-card-player strong {
-  font-weight: 600;
-  color: var(--text);
-}
-
-.game-card-meta {
-  display: flex;
-  gap: 16px;
-  color: var(--text-dim);
-  font-size: 0.813rem;
-}
-
-.game-card-meta-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.game-card-winner {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--status-completed);
-  margin-bottom: 6px;
-  padding: 6px 10px;
-  background: rgba(139, 92, 246, 0.1);
-  border-radius: 6px;
-  border-left: 3px solid var(--status-completed);
-}
-
-.game-card-actions {
-  display: flex;
-  gap: 12px;
-}
-
-.game-card-btn {
-  flex: 1;
-  padding: 12px 20px;
-  border-radius: 8px;
-  font-weight: 600;
-  font-size: 0.875rem;
-  cursor: pointer;
-  transition: all 0.2s;
-  border: none;
-  letter-spacing: -0.01em;
-}
-
-.game-card-btn.primary {
-  background: var(--primary);
-  color: white;
-}
-
-.game-card-btn.primary:hover {
-  background: var(--primary-hover);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(249, 115, 22, 0.3);
-}
-
-.game-card-btn.danger {
-  background: var(--bg);
-  color: var(--text-mid);
-  border: 1px solid var(--border);
-}
-
-.game-card-btn.danger:hover {
-  background: var(--error);
-  color: white;
-  border-color: var(--error);
-}
-
-/* Empty State */
-.games-empty {
-  text-align: center;
-  padding: 80px 32px;
-}
-
-.games-empty-icon {
-  width: 80px;
-  height: 80px;
-  margin: 0 auto 24px;
-  background: var(--hover);
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-dim);
-  font-size: 2rem;
-}
-
-.games-empty-title {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 12px;
-  letter-spacing: -0.02em;
-}
-
-.games-empty-text {
-  color: var(--text-dim);
-  margin-bottom: 32px;
-  max-width: 320px;
-  margin-left: auto;
-  margin-right: auto;
-  line-height: 1.6;
-}
-
-/* Animations */
-@keyframes pulse-glow {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-    box-shadow: 0 0 0 0 var(--status-live);
+// Wait for auth, then load games
+auth.onAuthStateChanged(async (user) => {
+  console.log('🔐 Auth state changed:', user ? user.uid : 'no user');
+  
+  if (user) {
+    currentUser = user;
+    mySessionId = user.uid;
+    console.log('✅ Authenticated as:', user.displayName, user.uid);
+    
+    // One-time sync for users who haven't been migrated yet
+    const userDoc = await db.collection('users').doc(user.uid).get();
+    const hasMigrated = userDoc.exists && userDoc.data().lobbyMigrationComplete;
+    
+    if (!hasMigrated) {
+      console.log('🔄 First time loading - syncing existing lobbies...');
+      await syncExistingLobbies();
+    } else {
+      console.log('✓ Lobby migration already complete');
+    }
+    
+    // TEST: Direct query to see what's in Firestore
+    console.log('🧪 TEST: Querying Firestore directly...');
+    try {
+      const testDoc = await db.collection('users').doc(user.uid).get();
+      console.log('   User doc exists?', testDoc.exists);
+      if (testDoc.exists) {
+        const data = testDoc.data();
+        console.log('   Full user data:', data);
+        console.log('   activeGames field:', data.activeGames);
+        console.log('   activeGames type:', typeof data.activeGames);
+        console.log('   activeGames isArray:', Array.isArray(data.activeGames));
+      }
+    } catch (err) {
+      console.error('   ❌ Test query failed:', err);
+    }
+    
+    console.log('   Calling loadGames()...');
+    
+    try {
+      await loadGames();
+      console.log('   ✅ loadGames() completed');
+    } catch (err) {
+      console.error('   ❌ loadGames() failed:', err);
+    }
+  } else {
+    console.log('❌ Not authenticated, redirecting to home...');
+    setTimeout(() => {
+      window.location.href = '/';
+    }, 1000);
   }
-  50% {
-    opacity: 0.7;
-    transform: scale(1.1);
-    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.2);
+});
+
+// Sync existing lobbies to activeGames (one-time migration)
+async function syncExistingLobbies() {
+  if (!currentUser) return;
+  
+  try {
+    console.log('🔄 Syncing existing lobbies to activeGames...');
+    
+    // Get all lobbies (we'll filter by player UID)
+    const lobbiesSnapshot = await db.collection('lobbies').get();
+    
+    console.log(`   Found ${lobbiesSnapshot.size} total lobbies in Firestore`);
+    
+    const userRef = db.collection('users').doc(currentUser.uid);
+    const userDoc = await userRef.get();
+    const existingGames = userDoc.exists ? (userDoc.data().activeGames || []) : [];
+    const existingIds = new Set(existingGames.map(g => g.lobbyId));
+    
+    console.log(`   User already has ${existingIds.size} games in activeGames`);
+    
+    let added = 0;
+    let checked = 0;
+    
+    // Check each lobby
+    for (const doc of lobbiesSnapshot.docs) {
+      const lobby = doc.data();
+      const lobbyId = doc.id;
+      
+      // Check if user is in this lobby's players array
+      const player = lobby.players?.find(p => p.uid === currentUser.uid);
+      
+      if (player) {
+        checked++;
+        
+        if (!existingIds.has(lobbyId)) {
+          // Add to activeGames
+          existingGames.push({
+            lobbyId: lobbyId,
+            phase: lobby.state || 'waiting',
+            playerName: player.name,
+            lastUpdated: lobby.updatedAt || new Date()
+          });
+          
+          added++;
+          console.log(`   ➕ Added lobby ${lobbyId} (${lobby.state}) - playing as ${player.name}`);
+        }
+      }
+    }
+    
+    console.log(`   Found ${checked} lobbies where you're a player`);
+    
+    if (added > 0) {
+      await userRef.update({ 
+        activeGames: existingGames,
+        lobbyMigrationComplete: true  // Mark as migrated
+      });
+      console.log(`✅ Synced ${added} existing lobbies to activeGames`);
+    } else {
+      await userRef.update({ 
+        lobbyMigrationComplete: true  // Mark as migrated even if no games
+      });
+      console.log('   ✓ All lobbies already in activeGames');
+    }
+    
+  } catch (err) {
+    console.error('❌ Error syncing existing lobbies:', err.message);
   }
 }
 
-/* Responsive */
-@media (max-width: 640px) {
-  .games-header {
-    padding: 16px 20px;
+// Load games from Firestore (database)
+async function loadGames() {
+  console.log('📡 loadGames() called');
+  console.log('   currentUser:', currentUser ? currentUser.uid : 'null');
+  
+  if (!currentUser) {
+    console.warn('   ⚠️ No user, cannot load games');
+    games = {};
+    renderGames();
+    return;
   }
-
-  .games-title {
-    font-size: 1rem;
-  }
-
-  .games-tabs {
-    padding: 12px 20px;
-    gap: 0;
-  }
-
-  .games-tab {
-    padding: 6px 12px;
-    font-size: 0.813rem;
-  }
-
-  .games-list {
-    padding: 20px;
-    gap: 14px;
-  }
-
-  .game-card {
-    padding: 16px;
-  }
-
-  .game-card-actions {
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .game-card-btn {
-    width: 100%;
-    padding: 11px 18px;
+  
+  try {
+    console.log(`   Fetching user document from Firestore...`);
+    
+    const userRef = db.collection('users').doc(currentUser.uid);
+    console.log('   User ref:', userRef.path);
+    
+    const userDoc = await userRef.get();
+    console.log('   User doc exists?', userDoc.exists);
+    
+    if (!userDoc.exists) {
+      console.warn('   ⚠️ User document does not exist in Firestore');
+      games = {};
+      renderGames();
+      return;
+    }
+    
+    const userData = userDoc.data();
+    console.log('   User data:', userData);
+    
+    // Load active games
+    const activeGamesArray = userData?.activeGames || [];
+    console.log(`   📂 Found ${activeGamesArray.length} active games`);
+    
+    // Load game history IDs
+    const gameHistoryIds = userData?.gameHistory || [];
+    console.log(`   📜 Found ${gameHistoryIds.length} games in history`);
+    
+    // Convert active games to object format
+    games = {};
+    for (const game of activeGamesArray) {
+      if (!game || !game.lobbyId) {
+        console.warn('   ⚠️ Invalid game object:', game);
+        continue;
+      }
+      
+      games[game.lobbyId] = {
+        lobbyId: game.lobbyId,
+        phase: game.phase || 'waiting',
+        playerName: game.playerName || 'Unknown',
+        lastUpdated: game.lastUpdated,
+        isHistory: false
+      };
+    }
+    
+    // Load completed games from gameHistory collection
+    if (gameHistoryIds.length > 0) {
+      console.log(`   📖 Loading ${gameHistoryIds.length} completed games...`);
+      
+      for (const gameId of gameHistoryIds) {
+        try {
+          const gameDoc = await db.collection('gameHistory').doc(gameId).get();
+          
+          if (gameDoc.exists) {
+            const gameData = gameDoc.data();
+            const player = gameData.players?.find(p => p.uid === currentUser.uid);
+            
+            games[gameId] = {
+              lobbyId: gameId,
+              phase: 'completed', // Special phase for archived games
+              playerName: player?.name || 'Unknown',
+              lastUpdated: gameData.finishedAt?.toMillis() || gameData.createdAt,
+              isHistory: true,
+              winner: gameData.winner,
+              finalScore: player?.score || 0,
+              finalStandings: gameData.players
+            };
+          }
+        } catch (err) {
+          console.error(`   Error loading game ${gameId}:`, err.message);
+        }
+      }
+    }
+    
+    console.log(`   ✅ Converted to ${Object.keys(games).length} total games`);
+    console.log('   Games object:', games);
+    
+    // Cache to localStorage
+    localStorage.setItem('dr_activeGames', JSON.stringify(games));
+    
+    renderGames();
+  } catch (err) {
+    console.error('   ❌ Error loading games from Firestore:', err);
+    console.error('   Error details:', err.message, err.stack);
+    games = {};
+    renderGames();
   }
 }
+
+// Render games list
+function renderGames() {
+  const gamesList = document.getElementById('gamesList');
+  const emptyState = document.getElementById('emptyState');
+  const gameArray = Object.values(games);
+  
+  console.log(`🎮 Rendering ${gameArray.length} games:`, gameArray);
+  
+  // Update counts
+  const allCount = gameArray.length;
+  const liveCount = gameArray.filter(g => g.phase === 'live').length;
+  const draftingCount = gameArray.filter(g => g.phase === 'drafting').length;
+  const waitingCount = gameArray.filter(g => g.phase === 'waiting').length;
+  const finishedCount = gameArray.filter(g => g.phase === 'finished').length;
+  const completedCount = gameArray.filter(g => g.phase === 'completed').length;
+  
+  console.log(`   Phase counts: Live=${liveCount}, Drafting=${draftingCount}, Waiting=${waitingCount}, Finished=${finishedCount}, Completed=${completedCount}`);
+  
+  document.getElementById('countAll').textContent = allCount;
+  document.getElementById('countLive').textContent = liveCount;
+  document.getElementById('countDrafting').textContent = draftingCount;
+  document.getElementById('countWaiting').textContent = waitingCount;
+  document.getElementById('countFinished').textContent = finishedCount;
+  document.getElementById('countCompleted').textContent = completedCount;
+  
+  // Show empty state if no games
+  if (gameArray.length === 0) {
+    gamesList.style.display = 'none';
+    emptyState.style.display = 'flex';
+    return;
+  }
+  
+  gamesList.style.display = 'flex';
+  emptyState.style.display = 'none';
+  
+  // Sort by urgency: Live > Drafting > Waiting > Finished > Completed
+  const phaseOrder = { live: 1, drafting: 2, waiting: 3, finished: 4, completed: 5 };
+  gameArray.sort((a, b) => phaseOrder[a.phase] - phaseOrder[b.phase]);
+  
+  // Render game cards
+  gamesList.innerHTML = gameArray.map(game => {
+    const phaseLabel = game.phase === 'live' ? 'Live' :
+                       game.phase === 'drafting' ? 'Drafting' :
+                       game.phase === 'waiting' ? 'Lobby' :
+                       game.phase === 'completed' ? 'Completed' : 'Finished';
+    
+    // Button text based on phase
+    const primaryBtnText = game.phase === 'live' ? 'Watch Live' :
+                           game.phase === 'drafting' ? 'Continue Draft' :
+                           game.phase === 'waiting' ? 'Rejoin Lobby' :
+                           game.phase === 'completed' ? 'View Results' : 'View Results';
+    
+    const secondaryBtnText = (game.phase === 'finished' || game.phase === 'completed') ? 'Delete' : 'Leave';
+    
+    // Time info - handle various timestamp formats
+    let lastUpdated = null;
+    if (game.lastUpdated) {
+      if (typeof game.lastUpdated === 'number') {
+        lastUpdated = new Date(game.lastUpdated);
+      } else if (game.lastUpdated.toDate) {
+        // Firestore Timestamp
+        lastUpdated = game.lastUpdated.toDate();
+      } else if (game.lastUpdated instanceof Date) {
+        lastUpdated = game.lastUpdated;
+      }
+    }
+    const timeAgo = lastUpdated ? getTimeAgo(lastUpdated) : '';
+    
+    // For completed games, show winner and score
+    let extraInfo = '';
+    if (game.phase === 'completed' && game.winner) {
+      const isWinner = game.winner.uid === (currentUser ? currentUser.uid : null);
+      extraInfo = `
+        <div class="game-card-winner">
+          ${isWinner ? '🏆 You won!' : `🏆 ${game.winner.name} won`} · ${game.finalScore || 0} pts
+        </div>
+      `;
+    }
+    
+    return `
+      <div class="game-card ${game.phase}" data-phase="${game.phase}">
+        <div class="game-card-header">
+          <div class="game-card-status">
+            <div class="status-indicator"></div>
+            ${phaseLabel}
+          </div>
+          <div class="game-card-code">${game.lobbyId}</div>
+        </div>
+        <div class="game-card-info">
+          <div class="game-card-player">Playing as <strong>${game.playerName}</strong></div>
+          ${extraInfo}
+          ${timeAgo ? `<div class="game-card-meta">
+            <div class="game-card-meta-item">${timeAgo}</div>
+          </div>` : ''}
+        </div>
+        <div class="game-card-actions">
+          <button class="game-card-btn primary" onclick="rejoinGame('${game.lobbyId}')">
+            ${primaryBtnText}
+          </button>
+          <button class="game-card-btn danger" onclick="leaveGame('${game.lobbyId}', ${game.phase === 'finished' || game.phase === 'completed'})">
+            ${secondaryBtnText}
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  }).join('');
+  
+  // Apply filter
+  applyFilter();
+}
+
+// Filter games
+function filterGames(filter) {
+  currentFilter = filter;
+  
+  // Update active tab
+  document.querySelectorAll('.games-tab').forEach(tab => {
+    tab.classList.remove('active');
+  });
+  document.querySelector(`[data-filter="${filter}"]`).classList.add('active');
+  
+  applyFilter();
+}
+
+function applyFilter() {
+  const cards = document.querySelectorAll('.game-card');
+  cards.forEach(card => {
+    const phase = card.dataset.phase;
+    if (currentFilter === 'all' || phase === currentFilter) {
+      card.classList.remove('hidden');
+    } else {
+      card.classList.add('hidden');
+    }
+  });
+}
+
+// Rejoin or view game
+function rejoinGame(lobbyId) {
+  const game = games[lobbyId];
+  if (!game) {
+    alert('Game not found');
+    return;
+  }
+  
+  // For finished games, always go to live.html to view final scores
+  if (game.phase === 'finished' || game.phase === 'live') {
+    window.location.href = `/live.html?lobby=${lobbyId}`;
+  } else {
+    // For waiting/drafting, go to home to rejoin
+    window.location.href = `/?rejoin=${lobbyId}`;
+  }
+}
+
+// Leave or delete game
+async function leaveGame(lobbyId, isFinished = false) {
+  const game = games[lobbyId];
+  const isCompleted = game?.phase === 'completed';
+  
+  const action = isFinished || isCompleted ? 'delete' : 'leave';
+  const message = isFinished || isCompleted
+    ? 'Delete this game? You can no longer view the results.' 
+    : 'Are you sure you want to leave this game?';
+  
+  if (!confirm(message)) {
+    return;
+  }
+  
+  try {
+    // Remove from Firestore
+    if (currentUser) {
+      const userRef = db.collection('users').doc(currentUser.uid);
+      const userDoc = await userRef.get();
+      
+      if (userDoc.exists) {
+        if (isCompleted) {
+          // Remove from gameHistory array
+          const gameHistory = userDoc.data().gameHistory || [];
+          const updatedHistory = gameHistory.filter(id => id !== lobbyId);
+          await userRef.update({ gameHistory: updatedHistory });
+          console.log(`✅ Removed ${lobbyId} from gameHistory`);
+        } else {
+          // Remove from activeGames array
+          const activeGames = userDoc.data().activeGames || [];
+          const updatedGames = activeGames.filter(g => g.lobbyId !== lobbyId);
+          await userRef.update({ activeGames: updatedGames });
+          console.log(`✅ Removed ${lobbyId} from activeGames`);
+        }
+      }
+    }
+    
+    // Emit leave event to server (removes from lobby)
+    socket.emit('leaveGame', { lobbyId, sessionId: mySessionId });
+    
+    console.log(`${isFinished || isCompleted ? '🗑️ Deleted' : '👋 Left'} game ${lobbyId}`);
+    
+    // Reload games from Firestore
+    await loadGames();
+    
+  } catch (err) {
+    console.error('Error leaving game:', err);
+    alert('Failed to leave game. Please try again.');
+  }
+}
+
+// Go home
+function goHome() {
+  window.location.href = '/';
+}
+
+// Time ago helper
+function getTimeAgo(date) {
+  const seconds = Math.floor((new Date() - date) / 1000);
+  
+  if (seconds < 60) return 'Just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+// Refresh games periodically
+setInterval(loadGames, 30000); // Every 30 seconds

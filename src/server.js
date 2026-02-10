@@ -1525,6 +1525,22 @@ async function saveLobbyToFirestore(lobby) {
   if (!firestoreDb) return;
   
   try {
+    // Helper to remove undefined values recursively
+    const removeUndefined = (obj) => {
+      if (Array.isArray(obj)) {
+        return obj.map(item => removeUndefined(item));
+      } else if (obj && typeof obj === 'object') {
+        const cleaned = {};
+        for (const [key, value] of Object.entries(obj)) {
+          if (value !== undefined) {
+            cleaned[key] = removeUndefined(value);
+          }
+        }
+        return cleaned;
+      }
+      return obj;
+    };
+    
     // Serialize lobby data (remove functions and circular refs)
     const lobbyData = {
       id: lobby.id,
@@ -1533,10 +1549,10 @@ async function saveLobbyToFirestore(lobby) {
       state: lobby.state,
       maxPlayers: lobby.maxPlayers,
       isPublic: lobby.isPublic,
-      settings: lobby.settings,
+      settings: removeUndefined(lobby.settings),
       createdAt: lobby.createdAt || admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      players: lobby.players.map(p => ({
+      players: lobby.players.map(p => removeUndefined({
         id: p.id,
         uid: p.uid,
         name: p.name,
@@ -1593,13 +1609,29 @@ async function archiveGameToHistory(lobby) {
   try {
     console.log(`📦 Archiving lobby ${lobby.id} to gameHistory...`);
     
+    // Helper to remove undefined values recursively
+    const removeUndefined = (obj) => {
+      if (Array.isArray(obj)) {
+        return obj.map(item => removeUndefined(item));
+      } else if (obj && typeof obj === 'object') {
+        const cleaned = {};
+        for (const [key, value] of Object.entries(obj)) {
+          if (value !== undefined) {
+            cleaned[key] = removeUndefined(value);
+          }
+        }
+        return cleaned;
+      }
+      return obj;
+    };
+    
     // Calculate final standings
     const standings = lobby.players
       .map(p => ({
         uid: p.uid,
         name: p.name,
         score: p.totalScore || 0,
-        roster: p.roster || []
+        roster: removeUndefined(p.roster || [])
       }))
       .sort((a, b) => b.score - a.score);
     
@@ -1610,7 +1642,7 @@ async function archiveGameToHistory(lobby) {
       finishedAt: admin.firestore.FieldValue.serverTimestamp(),
       createdAt: lobby.createdAt,
       gameDate: lobby.gameDate,
-      settings: lobby.settings,
+      settings: removeUndefined(lobby.settings),
       players: standings,
       winner: {
         uid: winner.uid,

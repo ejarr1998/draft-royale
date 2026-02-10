@@ -18,33 +18,6 @@ auth.onAuthStateChanged(async (user) => {
     mySessionId = user.uid;
     console.log('✅ Authenticated as:', user.displayName, user.uid);
     
-    // One-time sync for users who haven't been migrated yet
-    const userDoc = await db.collection('users').doc(user.uid).get();
-    const hasMigrated = userDoc.exists && userDoc.data().lobbyMigrationComplete;
-    
-    if (!hasMigrated) {
-      console.log('🔄 First time loading - syncing existing lobbies...');
-      await syncExistingLobbies();
-    } else {
-      console.log('✓ Lobby migration already complete');
-    }
-    
-    // TEST: Direct query to see what's in Firestore
-    console.log('🧪 TEST: Querying Firestore directly...');
-    try {
-      const testDoc = await db.collection('users').doc(user.uid).get();
-      console.log('   User doc exists?', testDoc.exists);
-      if (testDoc.exists) {
-        const data = testDoc.data();
-        console.log('   Full user data:', data);
-        console.log('   activeGames field:', data.activeGames);
-        console.log('   activeGames type:', typeof data.activeGames);
-        console.log('   activeGames isArray:', Array.isArray(data.activeGames));
-      }
-    } catch (err) {
-      console.error('   ❌ Test query failed:', err);
-    }
-    
     console.log('   Calling loadGames()...');
     
     try {
@@ -61,74 +34,6 @@ auth.onAuthStateChanged(async (user) => {
   }
 });
 
-// Sync existing lobbies to activeGames (one-time migration)
-async function syncExistingLobbies() {
-  if (!currentUser) return;
-  
-  try {
-    console.log('🔄 Syncing existing lobbies to activeGames...');
-    
-    // Get all lobbies (we'll filter by player UID)
-    const lobbiesSnapshot = await db.collection('lobbies').get();
-    
-    console.log(`   Found ${lobbiesSnapshot.size} total lobbies in Firestore`);
-    
-    const userRef = db.collection('users').doc(currentUser.uid);
-    const userDoc = await userRef.get();
-    const existingGames = userDoc.exists ? (userDoc.data().activeGames || []) : [];
-    const existingIds = new Set(existingGames.map(g => g.lobbyId));
-    
-    console.log(`   User already has ${existingIds.size} games in activeGames`);
-    
-    let added = 0;
-    let checked = 0;
-    
-    // Check each lobby
-    for (const doc of lobbiesSnapshot.docs) {
-      const lobby = doc.data();
-      const lobbyId = doc.id;
-      
-      // Check if user is in this lobby's players array
-      const player = lobby.players?.find(p => p.uid === currentUser.uid);
-      
-      if (player) {
-        checked++;
-        
-        if (!existingIds.has(lobbyId)) {
-          // Add to activeGames
-          existingGames.push({
-            lobbyId: lobbyId,
-            phase: lobby.state || 'waiting',
-            playerName: player.name,
-            lastUpdated: lobby.updatedAt || new Date()
-          });
-          
-          added++;
-          console.log(`   ➕ Added lobby ${lobbyId} (${lobby.state}) - playing as ${player.name}`);
-        }
-      }
-    }
-    
-    console.log(`   Found ${checked} lobbies where you're a player`);
-    
-    if (added > 0) {
-      await userRef.update({ 
-        activeGames: existingGames,
-        lobbyMigrationComplete: true  // Mark as migrated
-      });
-      console.log(`✅ Synced ${added} existing lobbies to activeGames`);
-    } else {
-      await userRef.update({ 
-        lobbyMigrationComplete: true  // Mark as migrated even if no games
-      });
-      console.log('   ✓ All lobbies already in activeGames');
-    }
-    
-  } catch (err) {
-    console.error('❌ Error syncing existing lobbies:', err.message);
-  }
-}
-
 // Load games from Firestore (database)
 async function loadGames() {
   console.log('📡 loadGames() called');
@@ -142,52 +47,44 @@ async function loadGames() {
   }
   
   try {
-    console.log(`   Fetching user document from Firestore...`);
+    console.log(`   Querying lobbies where you're a player...`);
     
-    const userRef = db.collection('users').doc(currentUser.uid);
-    console.log('   User ref:', userRef.path);
+    // Query all lobbies collection to find games where user is a player
+    const lobbiesSnapshot = await db.collection('lobbies').get();
+    console.log(`   Found ${lobbiesSnapshot.size} total lobbies`);
     
-    const userDoc = await userRef.get();
-    console.log('   User doc exists?', userDoc.exists);
-    
-    if (!userDoc.exists) {
-      console.warn('   ⚠️ User document does not exist in Firestore');
-      games = {};
-      renderGames();
-      return;
-    }
-    
-    const userData = userDoc.data();
-    console.log('   User data:', userData);
-    
-    // Load active games
-    const activeGamesArray = userData?.activeGames || [];
-    console.log(`   📂 Found ${activeGamesArray.length} active games`);
-    
-    // Load game history IDs
-    const gameHistoryIds = userData?.gameHistory || [];
-    console.log(`   📜 Found ${gameHistoryIds.length} games in history`);
-    
-    // Convert active games to object format
+    // Filter for lobbies where this user is a player
     games = {};
-    for (const game of activeGamesArray) {
-      if (!game || !game.lobbyId) {
-        console.warn('   ⚠️ Invalid game object:', game);
-        continue;
-      }
+    let foundCount = 0;
+    
+    for (const doc of lobbiesSnapshot.docs) {
+      const lobby = doc.data();
+      const lobbyId = doc.id;
       
-      games[game.lobbyId] = {
-        lobbyId: game.lobbyId,
-        phase: game.phase || 'waiting',
-        playerName: game.playerName || 'Unknown',
-        lastUpdated: game.lastUpdated,
-        isHistory: false
-      };
+      // Check if user is in this lobby's players array
+      const player = lobby.players?.find(p => p.uid === currentUser.uid || p.id === currentUser.uid);
+      
+      if (player) {
+        foundCount++;
+        games[lobbyId] = {
+          lobbyId: lobbyId,
+          phase: lobby.state || 'waiting',
+          playerName: player.name,
+          lastUpdated: lobby.updatedAt || lobby.createdAt || new Date(),
+          isHistory: false
+        };
+        console.log(`   ✓ Found game ${lobbyId} (${lobby.state}) - playing as ${player.name}`);
+      }
     }
     
-    // Load completed games from gameHistory collection
+    console.log(`   ✅ Found ${foundCount} games where you're a player`);
+    
+    // Also load completed games from gameHistory
+    const userDoc = await db.collection('users').doc(currentUser.uid).get();
+    const gameHistoryIds = userDoc.exists ? (userDoc.data()?.gameHistory || []) : [];
+    
     if (gameHistoryIds.length > 0) {
-      console.log(`   📖 Loading ${gameHistoryIds.length} completed games...`);
+      console.log(`   📜 Loading ${gameHistoryIds.length} completed games...`);
       
       for (const gameId of gameHistoryIds) {
         try {
@@ -199,7 +96,7 @@ async function loadGames() {
             
             games[gameId] = {
               lobbyId: gameId,
-              phase: 'completed', // Special phase for archived games
+              phase: 'completed',
               playerName: player?.name || 'Unknown',
               lastUpdated: gameData.finishedAt?.toMillis() || gameData.createdAt,
               isHistory: true,
@@ -214,8 +111,7 @@ async function loadGames() {
       }
     }
     
-    console.log(`   ✅ Converted to ${Object.keys(games).length} total games`);
-    console.log('   Games object:', games);
+    console.log(`   ✅ Total: ${Object.keys(games).length} games`);
     
     // Cache to localStorage
     localStorage.setItem('dr_activeGames', JSON.stringify(games));
@@ -377,8 +273,8 @@ function rejoinGame(lobbyId) {
     return;
   }
   
-  // For finished games, always go to live.html to view final scores
-  if (game.phase === 'finished' || game.phase === 'live') {
+  // For finished/completed/live games, always go to live.html to view scores
+  if (game.phase === 'finished' || game.phase === 'live' || game.phase === 'completed') {
     window.location.href = `/live.html?lobby=${lobbyId}`;
   } else {
     // For waiting/drafting, go to home to rejoin

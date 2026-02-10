@@ -18,6 +18,17 @@ auth.onAuthStateChanged(async (user) => {
     mySessionId = user.uid;
     console.log('✅ Authenticated as:', user.displayName, user.uid);
     
+    // One-time sync for users who haven't been migrated yet
+    const userDoc = await db.collection('users').doc(user.uid).get();
+    const hasMigrated = userDoc.exists && userDoc.data().lobbyMigrationComplete;
+    
+    if (!hasMigrated) {
+      console.log('🔄 First time loading - syncing existing lobbies...');
+      await syncExistingLobbies();
+    } else {
+      console.log('✓ Lobby migration already complete');
+    }
+    
     // TEST: Direct query to see what's in Firestore
     console.log('🧪 TEST: Querying Firestore directly...');
     try {
@@ -49,6 +60,74 @@ auth.onAuthStateChanged(async (user) => {
     }, 1000);
   }
 });
+
+// Sync existing lobbies to activeGames (one-time migration)
+async function syncExistingLobbies() {
+  if (!currentUser) return;
+  
+  try {
+    console.log('🔄 Syncing existing lobbies to activeGames...');
+    
+    // Get all lobbies (we'll filter by player UID)
+    const lobbiesSnapshot = await db.collection('lobbies').get();
+    
+    console.log(`   Found ${lobbiesSnapshot.size} total lobbies in Firestore`);
+    
+    const userRef = db.collection('users').doc(currentUser.uid);
+    const userDoc = await userRef.get();
+    const existingGames = userDoc.exists ? (userDoc.data().activeGames || []) : [];
+    const existingIds = new Set(existingGames.map(g => g.lobbyId));
+    
+    console.log(`   User already has ${existingIds.size} games in activeGames`);
+    
+    let added = 0;
+    let checked = 0;
+    
+    // Check each lobby
+    for (const doc of lobbiesSnapshot.docs) {
+      const lobby = doc.data();
+      const lobbyId = doc.id;
+      
+      // Check if user is in this lobby's players array
+      const player = lobby.players?.find(p => p.uid === currentUser.uid);
+      
+      if (player) {
+        checked++;
+        
+        if (!existingIds.has(lobbyId)) {
+          // Add to activeGames
+          existingGames.push({
+            lobbyId: lobbyId,
+            phase: lobby.state || 'waiting',
+            playerName: player.name,
+            lastUpdated: lobby.updatedAt || new Date()
+          });
+          
+          added++;
+          console.log(`   ➕ Added lobby ${lobbyId} (${lobby.state}) - playing as ${player.name}`);
+        }
+      }
+    }
+    
+    console.log(`   Found ${checked} lobbies where you're a player`);
+    
+    if (added > 0) {
+      await userRef.update({ 
+        activeGames: existingGames,
+        lobbyMigrationComplete: true  // Mark as migrated
+      });
+      console.log(`✅ Synced ${added} existing lobbies to activeGames`);
+    } else {
+      await userRef.update({ 
+        lobbyMigrationComplete: true  // Mark as migrated even if no games
+      });
+      console.log('   ✓ All lobbies already in activeGames');
+    }
+    
+  } catch (err) {
+    console.error('❌ Error syncing existing lobbies:', err.message);
+  }
+}
 
 // Load games from Firestore (database)
 async function loadGames() {
@@ -255,7 +334,6 @@ function renderGames() {
         </div>
       </div>
     `;
-  }).join('');
   }).join('');
   
   // Apply filter

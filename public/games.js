@@ -90,7 +90,7 @@ async function loadGames() {
     
     console.log(`   ✅ Found ${foundCount} games where you're a player`);
     
-    // Also load completed games from gameHistory
+    // Also load completed games from gameHistory (only if not already in active lobbies)
     const userDoc = await db.collection('users').doc(currentUser.uid).get();
     const gameHistoryIds = userDoc.exists ? (userDoc.data()?.gameHistory || []) : [];
     
@@ -98,6 +98,12 @@ async function loadGames() {
       console.log(`   📜 Loading ${gameHistoryIds.length} completed games...`);
       
       for (const gameId of gameHistoryIds) {
+        // Skip if this game is already loaded from active lobbies
+        if (games[gameId]) {
+          console.log(`   ⏭️ Skipping ${gameId} - already in active lobbies`);
+          continue;
+        }
+        
         try {
           const gameDoc = await db.collection('gameHistory').doc(gameId).get();
           

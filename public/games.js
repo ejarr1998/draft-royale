@@ -70,6 +70,13 @@ async function loadGames() {
         // Get current score if available
         let currentScore = player.totalScore || 0;
         
+        console.log(`   ✓ Found game ${lobbyId} (${lobby.state}) - player data:`, {
+          name: player.name,
+          totalScore: player.totalScore,
+          hasRoster: !!player.roster,
+          rosterLength: player.roster?.length || 0
+        });
+        
         games[lobbyId] = {
           lobbyId: lobbyId,
           phase: lobby.state || 'waiting',
@@ -78,7 +85,6 @@ async function loadGames() {
           isHistory: false,
           currentScore: currentScore
         };
-        console.log(`   ✓ Found game ${lobbyId} (${lobby.state}) - playing as ${player.name} - ${currentScore} pts`);
       }
     }
     
@@ -203,30 +209,35 @@ function renderGames() {
     }
     const timeAgo = lastUpdated ? getTimeAgo(lastUpdated) : '';
     
-    // Score info - show for live and finished games
+    // Score info - show for live and finished games (only if score > 0)
     let scoreInfo = '';
-    if (game.currentScore !== undefined || game.finalScore !== undefined) {
+    if ((game.currentScore !== undefined || game.finalScore !== undefined) && 
+        (game.phase === 'live' || game.phase === 'finished')) {
       const score = game.finalScore !== undefined ? game.finalScore : game.currentScore;
-      const isWinner = game.isHistory && game.winner && game.winner.uid === (currentUser ? currentUser.uid : null);
       
-      if (game.phase === 'finished' && isWinner) {
-        scoreInfo = `
-          <div class="game-card-score winner">
-            🏆 Winner · ${score} pts
-          </div>
-        `;
-      } else if (game.phase === 'finished') {
-        scoreInfo = `
-          <div class="game-card-score">
-            Final: ${score} pts
-          </div>
-        `;
-      } else if (game.phase === 'live') {
-        scoreInfo = `
-          <div class="game-card-score live">
-            Current: ${score} pts
-          </div>
-        `;
+      // Only show if score is greater than 0
+      if (score > 0) {
+        const isWinner = game.isHistory && game.winner && game.winner.uid === (currentUser ? currentUser.uid : null);
+        
+        if (game.phase === 'finished' && isWinner) {
+          scoreInfo = `
+            <div class="game-card-score winner">
+              🏆 Winner · ${score} pts
+            </div>
+          `;
+        } else if (game.phase === 'finished') {
+          scoreInfo = `
+            <div class="game-card-score">
+              Final: ${score} pts
+            </div>
+          `;
+        } else if (game.phase === 'live') {
+          scoreInfo = `
+            <div class="game-card-score live">
+              Current: ${score} pts
+            </div>
+          `;
+        }
       }
     }
     

@@ -66,14 +66,19 @@ async function loadGames() {
       
       if (player) {
         foundCount++;
+        
+        // Get current score if available
+        let currentScore = player.totalScore || 0;
+        
         games[lobbyId] = {
           lobbyId: lobbyId,
           phase: lobby.state || 'waiting',
           playerName: player.name,
           lastUpdated: lobby.updatedAt || lobby.createdAt || new Date(),
-          isHistory: false
+          isHistory: false,
+          currentScore: currentScore
         };
-        console.log(`   ✓ Found game ${lobbyId} (${lobby.state}) - playing as ${player.name}`);
+        console.log(`   ✓ Found game ${lobbyId} (${lobby.state}) - playing as ${player.name} - ${currentScore} pts`);
       }
     }
     
@@ -137,22 +142,25 @@ function renderGames() {
   
   console.log(`🎮 Rendering ${gameArray.length} games:`, gameArray);
   
+  // Treat completed as finished for display
+  gameArray.forEach(g => {
+    if (g.phase === 'completed') g.phase = 'finished';
+  });
+  
   // Update counts
   const allCount = gameArray.length;
   const liveCount = gameArray.filter(g => g.phase === 'live').length;
   const draftingCount = gameArray.filter(g => g.phase === 'drafting').length;
   const waitingCount = gameArray.filter(g => g.phase === 'waiting').length;
   const finishedCount = gameArray.filter(g => g.phase === 'finished').length;
-  const completedCount = gameArray.filter(g => g.phase === 'completed').length;
   
-  console.log(`   Phase counts: Live=${liveCount}, Drafting=${draftingCount}, Waiting=${waitingCount}, Finished=${finishedCount}, Completed=${completedCount}`);
+  console.log(`   Phase counts: Live=${liveCount}, Drafting=${draftingCount}, Waiting=${waitingCount}, Finished=${finishedCount}`);
   
   document.getElementById('countAll').textContent = allCount;
   document.getElementById('countLive').textContent = liveCount;
   document.getElementById('countDrafting').textContent = draftingCount;
   document.getElementById('countWaiting').textContent = waitingCount;
   document.getElementById('countFinished').textContent = finishedCount;
-  document.getElementById('countCompleted').textContent = completedCount;
   
   // Show empty state if no games
   if (gameArray.length === 0) {
@@ -164,24 +172,22 @@ function renderGames() {
   gamesList.style.display = 'flex';
   emptyState.style.display = 'none';
   
-  // Sort by urgency: Live > Drafting > Waiting > Finished > Completed
-  const phaseOrder = { live: 1, drafting: 2, waiting: 3, finished: 4, completed: 5 };
+  // Sort by urgency: Live > Drafting > Waiting > Finished
+  const phaseOrder = { live: 1, drafting: 2, waiting: 3, finished: 4 };
   gameArray.sort((a, b) => phaseOrder[a.phase] - phaseOrder[b.phase]);
   
   // Render game cards
   gamesList.innerHTML = gameArray.map(game => {
     const phaseLabel = game.phase === 'live' ? 'Live' :
                        game.phase === 'drafting' ? 'Drafting' :
-                       game.phase === 'waiting' ? 'Lobby' :
-                       game.phase === 'completed' ? 'Completed' : 'Finished';
+                       game.phase === 'waiting' ? 'Lobby' : 'Finished';
     
     // Button text based on phase
     const primaryBtnText = game.phase === 'live' ? 'Watch Live' :
                            game.phase === 'drafting' ? 'Continue Draft' :
-                           game.phase === 'waiting' ? 'Rejoin Lobby' :
-                           game.phase === 'completed' ? 'View Results' : 'View Results';
+                           game.phase === 'waiting' ? 'Rejoin Lobby' : 'View Results';
     
-    const secondaryBtnText = (game.phase === 'finished' || game.phase === 'completed') ? 'Delete' : 'Leave';
+    const secondaryBtnText = game.phase === 'finished' ? 'Delete' : 'Leave';
     
     // Time info - handle various timestamp formats
     let lastUpdated = null;
@@ -197,15 +203,31 @@ function renderGames() {
     }
     const timeAgo = lastUpdated ? getTimeAgo(lastUpdated) : '';
     
-    // For completed games, show winner and score
-    let extraInfo = '';
-    if (game.phase === 'completed' && game.winner) {
-      const isWinner = game.winner.uid === (currentUser ? currentUser.uid : null);
-      extraInfo = `
-        <div class="game-card-winner">
-          ${isWinner ? '🏆 You won!' : `🏆 ${game.winner.name} won`} · ${game.finalScore || 0} pts
-        </div>
-      `;
+    // Score info - show for live and finished games
+    let scoreInfo = '';
+    if (game.currentScore !== undefined || game.finalScore !== undefined) {
+      const score = game.finalScore !== undefined ? game.finalScore : game.currentScore;
+      const isWinner = game.isHistory && game.winner && game.winner.uid === (currentUser ? currentUser.uid : null);
+      
+      if (game.phase === 'finished' && isWinner) {
+        scoreInfo = `
+          <div class="game-card-score winner">
+            🏆 Winner · ${score} pts
+          </div>
+        `;
+      } else if (game.phase === 'finished') {
+        scoreInfo = `
+          <div class="game-card-score">
+            Final: ${score} pts
+          </div>
+        `;
+      } else if (game.phase === 'live') {
+        scoreInfo = `
+          <div class="game-card-score live">
+            Current: ${score} pts
+          </div>
+        `;
+      }
     }
     
     return `
@@ -219,7 +241,7 @@ function renderGames() {
         </div>
         <div class="game-card-info">
           <div class="game-card-player">Playing as <strong>${game.playerName}</strong></div>
-          ${extraInfo}
+          ${scoreInfo}
           ${timeAgo ? `<div class="game-card-meta">
             <div class="game-card-meta-item">${timeAgo}</div>
           </div>` : ''}
@@ -228,7 +250,7 @@ function renderGames() {
           <button class="game-card-btn primary" onclick="rejoinGame('${game.lobbyId}')">
             ${primaryBtnText}
           </button>
-          <button class="game-card-btn danger" onclick="leaveGame('${game.lobbyId}', ${game.phase === 'finished' || game.phase === 'completed'})">
+          <button class="game-card-btn danger" onclick="leaveGame('${game.lobbyId}', ${game.phase === 'finished'})">
             ${secondaryBtnText}
           </button>
         </div>
@@ -273,8 +295,8 @@ function rejoinGame(lobbyId) {
     return;
   }
   
-  // For finished/completed/live games, always go to live.html to view scores
-  if (game.phase === 'finished' || game.phase === 'live' || game.phase === 'completed') {
+  // For finished/live games, always go to live.html to view scores
+  if (game.phase === 'finished' || game.phase === 'live') {
     window.location.href = `/live.html?lobby=${lobbyId}`;
   } else {
     // For waiting/drafting, go to home to rejoin

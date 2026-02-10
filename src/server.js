@@ -1990,11 +1990,20 @@ io.on('connection', (socket) => {
           } else {
             console.log(`   ✓ Score interval already running`);
           }
+          
+          // Trigger immediate score update
+          console.log(`   🔄 Triggering immediate score update...`);
+          updateLiveScores(targetLobbyId).catch(err => console.error('Error in immediate update:', err));
+          
         } else if (gamesStarted && !gamesFinished && lobby.state === 'live') {
           // Already live and games ongoing - make sure interval is running
           if (!lobby.scoreInterval) {
             lobby.scoreInterval = setInterval(() => updateLiveScores(targetLobbyId), SCORE_UPDATE_INTERVAL);
             console.log(`   ▶️ Started score updates for live lobby ${targetLobbyId}`);
+            
+            // Trigger immediate score update
+            console.log(`   🔄 Triggering immediate score update...`);
+            updateLiveScores(targetLobbyId).catch(err => console.error('Error in immediate update:', err));
           } else {
             console.log(`   ✓ Lobby live and score interval running`);
           }

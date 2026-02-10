@@ -1412,6 +1412,9 @@ async function updateLiveScores(lobbyId) {
     
     // Update phase to 'finished' in all players' activeGames
     updateActiveGamesPhase(lobby, 'finished');
+    
+    // Archive to gameHistory collection for permanent storage
+    archiveGameToHistory(lobby);
   }
   
   console.log(`📊 Broadcasting scoreUpdate to lobby ${lobbyId}:`, {
@@ -1580,6 +1583,62 @@ async function updateActiveGamesPhase(lobby, phase) {
         console.error(`Error updating phase for user ${player.uid}:`, err.message);
       }
     }
+  }
+}
+
+// Archive finished game to permanent gameHistory collection
+async function archiveGameToHistory(lobby) {
+  if (!firestoreDb) return;
+  
+  try {
+    console.log(`📦 Archiving lobby ${lobby.id} to gameHistory...`);
+    
+    // Calculate final standings
+    const standings = lobby.players
+      .map(p => ({
+        uid: p.uid,
+        name: p.name,
+        score: p.totalScore || 0,
+        roster: p.roster || []
+      }))
+      .sort((a, b) => b.score - a.score);
+    
+    const winner = standings[0];
+    
+    const gameHistory = {
+      lobbyId: lobby.id,
+      finishedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: lobby.createdAt,
+      gameDate: lobby.gameDate,
+      settings: lobby.settings,
+      players: standings,
+      winner: {
+        uid: winner.uid,
+        name: winner.name,
+        score: winner.score
+      },
+      totalPlayers: lobby.players.length
+    };
+    
+    // Save to gameHistory collection
+    await firestoreDb.collection('gameHistory').doc(lobby.id).set(gameHistory);
+    console.log(`✅ Archived game ${lobby.id} - Winner: ${winner.name} (${winner.score} pts)`);
+    
+    // Add reference to each player's gameHistory array
+    for (const player of lobby.players) {
+      if (player.uid) {
+        try {
+          await firestoreDb.collection('users').doc(player.uid).update({
+            gameHistory: admin.firestore.FieldValue.arrayUnion(lobby.id)
+          });
+        } catch (err) {
+          console.error(`Error adding game to user ${player.uid} history:`, err.message);
+        }
+      }
+    }
+    
+  } catch (err) {
+    console.error(`❌ Error archiving game ${lobby.id}:`, err.message);
   }
 }
 
@@ -2534,7 +2593,7 @@ app.get('/api/cache-stats', (req, res) => {
 // ============================================
 // CLEANUP - Remove stale lobbies every 5 minutes
 // ============================================
-setInterval(() => {
+setInterval(async () => {
   const now = Date.now();
   const staleTime = 4 * 60 * 60 * 1000;
   const finishedTime = 30 * 60 * 1000;
@@ -2545,6 +2604,27 @@ setInterval(() => {
     const allDisconnected = lobby.state !== 'waiting' && lobby.players.every(p => p.disconnected);
 
     if (isOld || isFinishedOld || allDisconnected) {
+      // Remove from all players' activeGames in Firestore BEFORE deleting lobby
+      if (firestoreDb) {
+        for (const player of lobby.players) {
+          if (player.uid) {
+            try {
+              const userRef = firestoreDb.collection('users').doc(player.uid);
+              const userDoc = await userRef.get();
+              
+              if (userDoc.exists) {
+                const activeGames = userDoc.data().activeGames || [];
+                const updatedGames = activeGames.filter(g => g.lobbyId !== id);
+                await userRef.update({ activeGames: updatedGames });
+                console.log(`   Removed ${id} from user ${player.uid} activeGames`);
+              }
+            } catch (err) {
+              console.error(`Error removing lobby from user ${player.uid}:`, err.message);
+            }
+          }
+        }
+      }
+      
       if (lobby.scoreInterval) clearInterval(lobby.scoreInterval);
       if (lobby.draftTimer) clearTimeout(lobby.draftTimer);
       for (const p of lobby.players) {

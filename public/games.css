@@ -5,6 +5,7 @@
   --status-drafting: #f97316;
   --status-waiting: #64748b;
   --status-finished: #22c55e;
+  --status-completed: #8b5cf6;
 }
 
 .games-header {
@@ -161,6 +162,10 @@
   background: var(--status-finished);
 }
 
+.game-card.completed::before {
+  background: var(--status-completed);
+}
+
 .game-card:hover {
   border-color: var(--text-dim);
   transform: translateX(2px);
@@ -212,6 +217,10 @@
   background: var(--status-finished);
 }
 
+.game-card.completed .status-indicator {
+  background: var(--status-completed);
+}
+
 .game-card.live .game-card-status {
   color: var(--status-live);
 }
@@ -226,6 +235,10 @@
 
 .game-card.finished .game-card-status {
   color: var(--status-finished);
+}
+
+.game-card.completed .game-card-status {
+  color: var(--status-completed);
 }
 
 .game-card-code {
@@ -266,6 +279,17 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.game-card-winner {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--status-completed);
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  background: rgba(139, 92, 246, 0.1);
+  border-radius: 6px;
+  border-left: 3px solid var(--status-completed);
 }
 
 .game-card-actions {
